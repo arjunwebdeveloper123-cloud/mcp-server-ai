@@ -1,0 +1,14 @@
+{
+  "name": "mern-mcp-chatbot",
+  "private": true,
+  "scripts": {
+    "install:all": "npm install && npm --prefix mcp-server install && npm --prefix appointment-server install && npm --prefix backend install && npm --prefix frontend install",
+    "dev": "concurrently -n backend,dashboard -c blue,green \"npm --prefix backend run dev\" \"npm --prefix frontend run dev\"",
+    "build": "npm --prefix backend run build && npm --prefix frontend run build",
+    "inspect": "npm --prefix mcp-server run inspect",
+    "inspect:appointments": "npm --prefix appointment-server run inspect"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

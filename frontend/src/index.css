@@ -1,0 +1,81 @@
+@import "tailwindcss";
+
+/* ───────── Design tokens ─────────
+   Idea: "switchboard" — cool paper, blue-black ink, cobalt signal for live connections.
+   Status colors are reserved for real states (connected / failing / warning).        */
+@theme {
+  --font-sans: "Schibsted Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-paper: #f3f5f8;
+  --color-panel: #ffffff;
+  --color-ink: #17202e;
+  --color-ink-2: #2a3546;
+  --color-muted: #5b6676;
+  --color-faint: #8a94a3;
+  --color-line: #dde2ea;
+  --color-line-strong: #c4ccd8;
+
+  --color-signal: #2747d6;
+  --color-signal-soft: #e8ecfd;
+  --color-signal-ink: #1a2f94;
+
+  --color-live: #12825b;
+  --color-live-soft: #e3f4ec;
+  --color-fault: #c2362f;
+  --color-fault-soft: #fbeae8;
+  --color-warn: #a86a12;
+  --color-warn-soft: #fbf1df;
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-paper text-ink font-sans antialiased;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-signal);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: var(--color-signal-soft);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Live connection pulse — the one recurring motion, only on connected status dots */
+@keyframes live-pulse {
+  0% { box-shadow: 0 0 0 0 rgb(18 130 91 / 0.45); }
+  70% { box-shadow: 0 0 0 6px rgb(18 130 91 / 0); }
+  100% { box-shadow: 0 0 0 0 rgb(18 130 91 / 0); }
+}
+.dot-live {
+  animation: live-pulse 2.4s ease-out infinite;
+}
+
+/* Wire between nodes on the overview */
+@keyframes wire-flow {
+  to { stroke-dashoffset: -16; }
+}
+.wire-flow {
+  stroke-dasharray: 4 4;
+  animation: wire-flow 1.2s linear infinite;
+}
