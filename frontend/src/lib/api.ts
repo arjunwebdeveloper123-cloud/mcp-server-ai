@@ -131,6 +131,7 @@ export type AiNodeTestResult = {
   latencyMs: number
   provider: string
   model: string
+  note?: string
 }
 
 export type IncomingHook = {

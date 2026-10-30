@@ -200,8 +200,19 @@ function AiFields({
       })
       setTestResult(res)
       if (res.ok) {
-        onChange({ aiVerified: true, aiVerifiedAt: new Date().toISOString() })
-        toast.success(`Live API verified! Latency: ${res.latencyMs}ms`)
+        const patch: Partial<BoxData> = {
+          aiVerified: true,
+          aiVerifiedAt: new Date().toISOString(),
+        }
+        if (res.model && res.model !== d.aiModel) {
+          patch.aiModel = res.model
+        }
+        onChange(patch)
+        if (res.note) {
+          toast.success(res.note)
+        } else {
+          toast.success(`Live API verified! Latency: ${res.latencyMs}ms`)
+        }
       } else {
         onChange({ aiVerified: false })
         toast.error(res.error || 'API verification failed.')
@@ -442,6 +453,11 @@ function AiFields({
                   <p className="mt-0.5 text-muted">
                     Responded in {testResult.latencyMs}ms • Model: <span className="font-mono">{testResult.model}</span>
                   </p>
+                  {testResult.note ? (
+                    <p className="mt-1 text-xs text-amber-800 dark:text-amber-300 font-medium">
+                      ℹ️ {testResult.note}
+                    </p>
+                  ) : null}
                   <p className="mt-1 italic text-ink-2 truncate">
                     “{testResult.reply}”
                   </p>

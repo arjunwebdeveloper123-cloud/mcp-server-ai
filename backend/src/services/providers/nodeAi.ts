@@ -16,6 +16,7 @@ export type TestAiKeyResult = {
   latencyMs: number;
   provider: string;
   model: string;
+  note?: string;
 };
 
 export type ExecuteNodeAiParams = {
@@ -30,7 +31,7 @@ export type ExecuteNodeAiParams = {
 
 /** Default models per provider */
 export const DEFAULT_MODELS: Record<string, string> = {
-  gemini: "gemini-1.5-flash",
+  gemini: "gemini-3.8-flash",
   openai: "gpt-4o-mini",
   anthropic: "claude-3-5-haiku-20241022",
   groq: "llama-3.3-70b-versatile",
@@ -39,7 +40,7 @@ export const DEFAULT_MODELS: Record<string, string> = {
 
 /**
  * Real-time API key verification:
- * Calls the provider with a short probe message and returns live status, latency, and model reply.
+ * Calls the provider with a probe message and returns live status, latency, and model reply.
  */
 export async function testNodeAiKey(params: TestAiKeyParams): Promise<TestAiKeyResult> {
   const provider = (params.provider || "gemini").toLowerCase();
@@ -61,11 +62,16 @@ export async function testNodeAiKey(params: TestAiKeyParams): Promise<TestAiKeyR
 
   try {
     let reply = "";
+    let finalModel = model;
+    let note: string | undefined;
 
     if (provider === "anthropic") {
       reply = await testAnthropic(apiKey, model);
     } else if (provider === "gemini") {
-      reply = await testGemini(apiKey, model);
+      const gRes = await testGemini(apiKey, model);
+      reply = gRes.reply;
+      finalModel = gRes.resolvedModel;
+      note = gRes.note;
     } else if (provider === "groq") {
       reply = await testOpenAiFormat("https://api.groq.com/openai/v1/chat/completions", apiKey, model, "Groq");
     } else if (provider === "openai") {
@@ -81,7 +87,8 @@ export async function testNodeAiKey(params: TestAiKeyParams): Promise<TestAiKeyR
       reply: reply || "OK, connection successful!",
       latencyMs: Date.now() - started,
       provider,
-      model,
+      model: finalModel,
+      note,
     };
   } catch (err) {
     return {
@@ -126,67 +133,168 @@ async function testAnthropic(apiKey: string, model: string): Promise<string> {
   return content.find((b) => b.type === "text")?.text?.trim() || "OK";
 }
 
-/** Test Google Gemini API (tries official OpenAI compatible endpoint first, fallback to REST) */
-async function testGemini(apiKey: string, model: string): Promise<string> {
-  // Try OpenAI-compatible endpoint
-  const openAiUrl = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
+/**
+ * Test Google Gemini API
+ * 1. Validates key and discovers allowed models via ListModels
+ * 2. Matches requested model or auto-resolves to the active available model
+ * 3. Probes generateContent with x-goog-api-key header and query parameter fallback
+ * 4. Extracts real Google error messages on failure
+ */
+async function testGemini(
+  apiKey: string,
+  model: string
+): Promise<{ reply: string; resolvedModel: string; note?: string }> {
+  const cleanKey = apiKey.trim();
+  const rawRequested = (model || "").trim() || "gemini-3.8-flash";
+  const requestedModel = rawRequested.replace(/^models\//i, "").trim();
+  const requestedModelLower = requestedModel.toLowerCase();
+
+  // Step 1: Discover available models for this specific API key
+  let availableModels: string[] = [];
   try {
-    const res = await fetch(openAiUrl, {
+    const listUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}`;
+    const listRes = await fetch(listUrl, {
+      method: "GET",
+      headers: { "x-goog-api-key": cleanKey },
+      signal: AbortSignal.timeout(12_000),
+    });
+
+    const listData = (await listRes.json().catch(() => ({}))) as Record<string, unknown>;
+
+    if (!listRes.ok) {
+      const errObj = (listData.error as Record<string, unknown>) ?? {};
+      const errMsg = (errObj.message as string) || listRes.statusText;
+      if (listRes.status === 400 && (errMsg.includes("API key not valid") || errMsg.includes("API_KEY_INVALID"))) {
+        throw new Error("Invalid Google Gemini API Key. Please get a valid key from Google AI Studio (aistudio.google.com).");
+      }
+      throw new Error(`Google Gemini authentication error (${listRes.status}): ${errMsg}`);
+    }
+
+    const rawList = (listData.models as Array<{ name?: string; supportedGenerationMethods?: string[] }>) ?? [];
+    availableModels = rawList
+      .filter((m) => m.supportedGenerationMethods?.includes("generateContent"))
+      .map((m) => (m.name || "").replace(/^models\//i, ""))
+      .filter(Boolean);
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("Invalid Google Gemini API Key")) throw err;
+    if (err instanceof Error && err.message.includes("Google Gemini authentication error")) throw err;
+    // Otherwise network/timeout, continue to direct generation probe
+  }
+
+  // Step 2: Determine model to use (case-insensitive exact match first)
+  let resolvedModel = requestedModelLower;
+  let note: string | undefined;
+
+  if (availableModels.length > 0) {
+    const exact = availableModels.find((m) => m.toLowerCase() === requestedModelLower);
+    if (exact) {
+      resolvedModel = exact;
+    } else {
+      // Find closest alternative in available models, prioritizing modern 3.8 flash/pro models
+      const aliasMatch =
+        availableModels.find((m) => m.toLowerCase() === `${requestedModelLower}-latest`) ||
+        availableModels.find((m) => m.toLowerCase() === requestedModelLower.replace(/-latest$/, "")) ||
+        // If flash was requested, find highest version flash
+        (requestedModelLower.includes("flash")
+          ? availableModels.find((m) => m.toLowerCase().includes("3.8") && m.toLowerCase().includes("flash")) ||
+            availableModels.find((m) => m.toLowerCase().includes("2.5") && m.toLowerCase().includes("flash")) ||
+            availableModels.find((m) => m.toLowerCase().includes("flash"))
+          : undefined) ||
+        // If pro was requested, find highest version pro
+        (requestedModelLower.includes("pro")
+          ? availableModels.find((m) => m.toLowerCase().includes("3.8") && m.toLowerCase().includes("pro")) ||
+            availableModels.find((m) => m.toLowerCase().includes("pro"))
+          : undefined) ||
+        availableModels.find((m) => m.toLowerCase().includes("3.8")) ||
+        availableModels.find((m) => m.toLowerCase().includes("flash")) ||
+        availableModels[0];
+
+      if (aliasMatch) {
+        resolvedModel = aliasMatch;
+        if (aliasMatch.toLowerCase() !== requestedModelLower) {
+          note = `Model "${rawRequested}" auto-connected with active model "${aliasMatch}".`;
+        }
+      } else {
+        throw new Error(
+          `Model "${rawRequested}" is not enabled for your API key. Available models: ${availableModels.slice(0, 6).join(", ")}`
+        );
+      }
+    }
+  }
+
+  // Step 3: Probe generateContent
+  const probePayload = {
+    contents: [{ role: "user", parts: [{ text: "Reply with 'Live & Connected!' in 3 words or less." }] }],
+    generationConfig: { maxOutputTokens: 25 },
+  };
+
+  const endpointsToTry = [
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(resolvedModel)}:generateContent`,
+    `https://generativelanguage.googleapis.com/v1/models/${encodeURIComponent(resolvedModel)}:generateContent`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(resolvedModel)}:generateContent?key=${encodeURIComponent(cleanKey)}`,
+  ];
+
+  let lastError = "";
+
+  for (const ep of endpointsToTry) {
+    try {
+      const res = await fetch(ep, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": cleanKey,
+        },
+        body: JSON.stringify(probePayload),
+        signal: AbortSignal.timeout(12_000),
+      });
+
+      const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+
+      if (res.ok) {
+        const candidates = (data.candidates as Array<{ content?: { parts?: Array<{ text?: string }> } }>) ?? [];
+        const reply = candidates[0]?.content?.parts?.[0]?.text?.trim() || "Live & Connected!";
+        return { reply, resolvedModel, note };
+      }
+
+      const errObj = (data.error as Record<string, unknown>) ?? {};
+      lastError = (errObj.message as string) || res.statusText || `HTTP ${res.status}`;
+      if (res.status === 400 && lastError.includes("API key not valid")) {
+        throw new Error("Invalid Google Gemini API Key. Please verify your key in Google AI Studio.");
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("Invalid Google Gemini API Key")) throw err;
+      lastError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  // Also try OpenAI compatible format if REST had issues
+  try {
+    const oaUrl = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
+    const oaRes = await fetch(oaUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${cleanKey}`,
       },
       body: JSON.stringify({
-        model,
+        model: resolvedModel,
         messages: [{ role: "user", content: "Reply with 'Live & Connected!' in 3 words or less." }],
-        max_tokens: 30,
+        max_tokens: 25,
       }),
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(12_000),
     });
 
-    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-
-    if (res.ok) {
-      const choices = (data.choices as Array<{ message?: { content?: string } }>) ?? [];
-      return choices[0]?.message?.content?.trim() || "OK";
+    if (oaRes.ok) {
+      const oaData = (await oaRes.json().catch(() => ({}))) as Record<string, unknown>;
+      const choices = (oaData.choices as Array<{ message?: { content?: string } }>) ?? [];
+      const reply = choices[0]?.message?.content?.trim();
+      if (reply) return { reply, resolvedModel, note };
     }
-
-    // If 401/403 or specific auth error, report it directly
-    const errObj = (data.error as Record<string, unknown>) ?? {};
-    const errMsg = (errObj.message as string) || res.statusText;
-    if (res.status === 400 && errMsg.includes("API_KEY_INVALID")) {
-      throw new Error("Invalid Google Gemini API Key. Get a valid key from Google AI Studio.");
-    }
-  } catch (err) {
-    if (err instanceof Error && err.message.includes("Invalid Google Gemini")) throw err;
+  } catch {
+    // Ignore and report lastError
   }
 
-  // Fallback to Native Gemini REST API
-  const nativeUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-  const res = await fetch(nativeUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: "Reply with 'Live & Connected!' in 3 words or less." }] }],
-      generationConfig: { maxOutputTokens: 30 },
-    }),
-    signal: AbortSignal.timeout(15_000),
-  });
-
-  const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-  if (!res.ok) {
-    const errObj = (data.error as Record<string, unknown>) ?? {};
-    const msg = (errObj.message as string) || res.statusText;
-    if (res.status === 400 && msg.includes("API_KEY_INVALID")) {
-      throw new Error("Invalid Google Gemini API Key. Please verify in Google AI Studio.");
-    }
-    if (res.status === 404) throw new Error(`Gemini model "${model}" not found (404). Try "gemini-1.5-flash".`);
-    throw new Error(`Google Gemini error (${res.status}): ${msg}`);
-  }
-
-  const candidates = (data.candidates as Array<{ content?: { parts?: Array<{ text?: string }> } }>) ?? [];
-  return candidates[0]?.content?.parts?.[0]?.text?.trim() || "OK";
+  throw new Error(`Google Gemini error: ${lastError || "Could not connect to model."}`);
 }
 
 /** Test standard OpenAI-compatible endpoints (OpenAI, Groq, OpenRouter, etc.) */
@@ -257,7 +365,49 @@ export async function executeNodeAi(params: ExecuteNodeAiParams): Promise<string
   }
 
   if (provider === "gemini") {
-    // Attempt OpenAI compatible endpoint first
+    const cleanModel = model.replace(/^models\//i, "").trim().toLowerCase() || "gemini-3.8-flash";
+    const contents = [
+      ...(params.systemPrompt ? [{ role: "user", parts: [{ text: `System instruction: ${params.systemPrompt}` }] }] : []),
+      ...params.history.map((m) => ({
+        role: m.role === "assistant" ? "model" : "user",
+        parts: [{ text: m.content }],
+      })),
+    ];
+
+    const endpoints = [
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent`,
+      `https://generativelanguage.googleapis.com/v1/models/${encodeURIComponent(cleanModel)}:generateContent`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    ];
+
+    let lastErr = "";
+    for (const ep of endpoints) {
+      try {
+        const res = await fetch(ep, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": apiKey,
+          },
+          body: JSON.stringify({ contents, generationConfig: { maxOutputTokens: maxTokens } }),
+          signal: AbortSignal.timeout(45_000),
+        });
+
+        const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+        if (res.ok) {
+          const candidates = (data.candidates as Array<{ content?: { parts?: Array<{ text?: string }> } }>) ?? [];
+          const text = candidates[0]?.content?.parts?.[0]?.text?.trim();
+          if (text) return text;
+        } else {
+          const errObj = (data.error as Record<string, unknown>) ?? {};
+          lastErr = (errObj.message as string) || res.statusText;
+        }
+      } catch (err) {
+        lastErr = err instanceof Error ? err.message : String(err);
+      }
+    }
+
+    // Try OpenAI format as fallback
     try {
       const openAiUrl = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
       const messages = [
@@ -271,7 +421,7 @@ export async function executeNodeAi(params: ExecuteNodeAiParams): Promise<string
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
         },
-        body: JSON.stringify({ model, messages, max_tokens: maxTokens }),
+        body: JSON.stringify({ model: cleanModel, messages, max_tokens: maxTokens }),
         signal: AbortSignal.timeout(45_000),
       });
 
@@ -282,33 +432,10 @@ export async function executeNodeAi(params: ExecuteNodeAiParams): Promise<string
         if (reply) return reply;
       }
     } catch {
-      // Fallback to REST
+      // Fallback
     }
 
-    // Native Gemini REST fallback
-    const nativeUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-    const contents = [
-      ...(params.systemPrompt ? [{ role: "user", parts: [{ text: `System instruction: ${params.systemPrompt}` }] }] : []),
-      ...params.history.map((m) => ({
-        role: m.role === "assistant" ? "model" : "user",
-        parts: [{ text: m.content }],
-      })),
-    ];
-
-    const res = await fetch(nativeUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contents, generationConfig: { maxOutputTokens: maxTokens } }),
-      signal: AbortSignal.timeout(45_000),
-    });
-
-    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-    if (!res.ok) {
-      const errObj = (data.error as Record<string, unknown>) ?? {};
-      throw new Error(`Google Gemini error (${res.status}): ${(errObj.message as string) || res.statusText}`);
-    }
-    const candidates = (data.candidates as Array<{ content?: { parts?: Array<{ text?: string }> } }>) ?? [];
-    return candidates[0]?.content?.parts?.[0]?.text?.trim() || "";
+    throw new Error(`Google Gemini error: ${lastErr || "Failed to generate reply"}`);
   }
 
   // OpenAI / Groq / Custom
@@ -341,4 +468,3 @@ export async function executeNodeAi(params: ExecuteNodeAiParams): Promise<string
   const choices = (data.choices as Array<{ message?: { content?: string } }>) ?? [];
   return choices[0]?.message?.content?.trim() || "";
 }
-
