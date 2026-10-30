@@ -1,11 +1,24 @@
-import { useMemo } from 'react'
+import { useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Plus, Trash2, Wand2, X } from 'lucide-react'
+import { Check, ExternalLink, Eye, EyeOff, KeyRound, Plus, Sparkles, Trash2, Wand2, X } from 'lucide-react'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Select, Textarea } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
-import { api, type McpServerItem } from '@/lib/api'
-import { BOXES, OPERATORS, VALIDATIONS, uid, type BoxData, type BoxType, type ButtonOption } from './boxes'
+import { api, type McpServerItem, type AiNodeTestResult } from '@/lib/api'
+import {
+  BOXES,
+  OPERATORS,
+  VALIDATIONS,
+  uid,
+  AI_PROVIDERS,
+  PROMPT_TEMPLATES,
+  type BoxData,
+  type BoxType,
+  type ButtonOption,
+  type AiProvider,
+} from './boxes'
+import { cn } from '@/lib/utils'
 
 type Props = {
   node: { id: string; type: BoxType; data: BoxData }
@@ -115,40 +128,9 @@ export function Inspector({ node, variables, onChange, onDelete, onClose, onOpti
           </>
         ) : null}
 
-        {/* ── AI ── */}
+        {/* ── AI Reply Node (Interactive API credentials & Prompt instructions) ── */}
         {node.type === 'ai' ? (
-          <>
-            <fieldset>
-              <legend className="mb-1.5 text-[13px] font-medium text-ink-2">How it works</legend>
-              <div className="grid gap-2">
-                {(
-                  [
-                    ['once', 'Answer once, then continue', 'Good for “explain our services”'],
-                    ['chat', 'Keep chatting', 'Answers every message until an exit word'],
-                  ] as const
-                ).map(([v, title, sub]) => (
-                  <label key={v} className={`cursor-pointer rounded-md border px-3 py-2 ${(d.mode ?? 'once') === v ? 'border-signal bg-signal-soft' : 'border-line-strong'}`}>
-                    <input type="radio" className="sr-only" checked={(d.mode ?? 'once') === v} onChange={() => onChange({ mode: v })} />
-                    <span className="block text-[13px] font-medium">{title}</span>
-                    <span className="block text-[12px] text-muted">{sub}</span>
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-            <Field label="Instruction for the AI" htmlFor={id('ins')} hint="Only the file parts that match the customer’s message are sent with it">
-              <Textarea id={id('ins')} value={d.instruction ?? ''} onChange={(e) => onChange({ instruction: e.target.value })} className="min-h-24" />
-            </Field>
-            {d.mode === 'chat' ? (
-              <>
-                <Field label="First message (optional)" htmlFor={id('intro')} hint="Shown when this box starts, before any AI reply">
-                  <Input id={id('intro')} value={d.intro ?? ''} onChange={(e) => onChange({ intro: e.target.value })} placeholder="Zaroor! Apna sawaal likhiye." />
-                </Field>
-                <Field label="Exit words" htmlFor={id('exit')} hint="Comma separated. Typing one follows the arrow out of this box.">
-                  <Input id={id('exit')} value={d.exitKeywords ?? ''} onChange={(e) => onChange({ exitKeywords: e.target.value })} placeholder="menu, back" />
-                </Field>
-              </>
-            ) : null}
-          </>
+          <AiFields d={d} id={id} varHint={varHint} variables={variables} onChange={onChange} />
         ) : null}
 
         {/* ── Tool ── */}
@@ -177,6 +159,418 @@ export function Inspector({ node, variables, onChange, onDelete, onClose, onOpti
 }
 
 const slug = (s: string) => s.replace(/[^a-zA-Z0-9_]/g, '').slice(0, 30)
+
+/**
+ * AI Reply Node Inspector
+ * Step 1: Provider selection, Reference models, API Key, and Real-time Live API testing.
+ * Step 2: Prompt / Instructions for what needs to be done by the AI + quick templates and variable inserter.
+ */
+function AiFields({
+  d,
+  id,
+  varHint: _varHint,
+  variables,
+  onChange,
+}: {
+  d: BoxData
+  id: (k: string) => string
+  varHint: string
+  variables: string[]
+  onChange: (p: Partial<BoxData>) => void
+}) {
+  const currentProviderKey = (d.aiProvider || 'gemini') as AiProvider
+  const currentProvider = AI_PROVIDERS[currentProviderKey] || AI_PROVIDERS.gemini
+  const [showKey, setShowKey] = useState(false)
+  const [isTesting, setIsTesting] = useState(false)
+  const [testResult, setTestResult] = useState<AiNodeTestResult | null>(null)
+
+  const handleTestLive = async () => {
+    if (!d.aiApiKey?.trim() && currentProviderKey !== 'custom') {
+      toast.error('Please enter your API key first.')
+      return
+    }
+    setIsTesting(true)
+    setTestResult(null)
+    try {
+      const res = await api.post<AiNodeTestResult>('/api/admin/flows/test-ai-key', {
+        provider: currentProviderKey,
+        apiKey: d.aiApiKey || '',
+        model: d.aiModel || currentProvider.defaultModel,
+        baseUrl: d.aiBaseUrl || currentProvider.defaultBaseUrl,
+      })
+      setTestResult(res)
+      if (res.ok) {
+        onChange({ aiVerified: true, aiVerifiedAt: new Date().toISOString() })
+        toast.success(`Live API verified! Latency: ${res.latencyMs}ms`)
+      } else {
+        onChange({ aiVerified: false })
+        toast.error(res.error || 'API verification failed.')
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setTestResult({
+        ok: false,
+        error: msg,
+        latencyMs: 0,
+        provider: currentProviderKey,
+        model: d.aiModel || currentProvider.defaultModel,
+      })
+      onChange({ aiVerified: false })
+      toast.error(msg)
+    } finally {
+      setIsTesting(false)
+    }
+  }
+
+  const setProvider = (p: AiProvider) => {
+    const prov = AI_PROVIDERS[p]
+    onChange({
+      aiProvider: p,
+      aiModel: prov.defaultModel,
+      aiBaseUrl: prov.defaultBaseUrl || '',
+      aiVerified: false,
+    })
+    setTestResult(null)
+  }
+
+  const applyPromptTemplate = (tmpl: { title: string; text: string }) => {
+    onChange({ instruction: tmpl.text })
+    toast.success(`Applied: ${tmpl.title}`)
+  }
+
+  const insertVariable = (varName: string) => {
+    const token = `{{${varName}}}`
+    const current = d.instruction ?? ''
+    onChange({ instruction: current ? `${current} ${token}` : token })
+    toast.success(`Inserted ${token}`)
+  }
+
+  const hasKey = Boolean(d.aiApiKey?.trim())
+
+  return (
+    <div className="grid gap-5">
+      {/* ── STEP 1: AI Provider & API Key Setup ── */}
+      <section className="rounded-lg border border-line bg-paper/60 p-3.5 space-y-3.5">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <KeyRound className="size-4 text-signal" />
+            <span className="text-[13px] font-semibold text-ink">1. AI Credentials & Model</span>
+          </div>
+          {d.aiVerified && hasKey ? (
+            <span className="inline-flex items-center gap-1 rounded bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-400">
+              <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" /> Live
+            </span>
+          ) : hasKey ? (
+            <span className="rounded bg-signal-soft px-2 py-0.5 text-[11px] font-medium text-signal">
+              Key entered
+            </span>
+          ) : (
+            <span className="rounded bg-amber-500/15 px-2 py-0.5 text-[11px] font-semibold text-amber-700 dark:text-amber-400">
+              Key required
+            </span>
+          )}
+        </div>
+
+        {!hasKey ? (
+          <div className="rounded-md border border-amber-500/25 bg-amber-500/10 p-2.5 text-[12px] text-amber-900 dark:text-amber-200">
+            <p className="font-semibold">🔑 First: Add your AI API key</p>
+            <p className="mt-0.5 text-muted leading-snug">
+              Choose your provider, enter your API key, and test live connectivity in real time.
+            </p>
+          </div>
+        ) : null}
+
+        {/* Provider selection pills */}
+        <div>
+          <label className="mb-1.5 block text-[12px] font-medium text-muted">Choose AI Provider</label>
+          <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+            {(Object.keys(AI_PROVIDERS) as AiProvider[]).map((pKey) => {
+              const p = AI_PROVIDERS[pKey]
+              const isSelected = currentProviderKey === pKey
+              return (
+                <button
+                  key={pKey}
+                  type="button"
+                  onClick={() => setProvider(pKey)}
+                  className={cn(
+                    'flex flex-col items-start rounded-md border p-2 text-left transition-all',
+                    isSelected
+                      ? 'border-signal bg-signal-soft/70 shadow-xs'
+                      : 'border-line bg-panel hover:border-line-strong'
+                  )}
+                >
+                  <span className={cn('text-[12px] font-semibold', isSelected ? 'text-signal' : 'text-ink')}>
+                    {p.name.split(' ')[0]}
+                  </span>
+                  <span className="line-clamp-1 text-[10.5px] text-muted">
+                    {pKey === 'gemini' ? 'Free tier' : pKey === 'openai' ? 'GPT-4o' : pKey === 'anthropic' ? 'Claude' : pKey === 'groq' ? 'Llama 3' : 'Custom'}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+          <p className="mt-1 text-[11.5px] text-muted">{currentProvider.subtitle}</p>
+        </div>
+
+        {/* Model Reference & Selector */}
+        <div>
+          <label className="mb-1.5 block text-[12px] font-medium text-muted">
+            Model Reference (Click to pick)
+          </label>
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {currentProvider.models.map((m) => {
+              const isModelSelected = (d.aiModel || currentProvider.defaultModel) === m.id
+              return (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => {
+                    onChange({ aiModel: m.id })
+                    setTestResult(null)
+                  }}
+                  className={cn(
+                    'rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors',
+                    isModelSelected
+                      ? 'border-signal bg-signal text-white'
+                      : 'border-line-strong bg-panel text-ink-2 hover:border-signal hover:text-signal'
+                  )}
+                >
+                  {m.label}
+                </button>
+              )
+            })}
+          </div>
+
+          <Field label="Model identifier" htmlFor={id('ai-model')} hint="Pick from buttons above or enter any custom model name">
+            <Input
+              id={id('ai-model')}
+              value={d.aiModel ?? currentProvider.defaultModel}
+              onChange={(e) => {
+                onChange({ aiModel: e.target.value })
+                setTestResult(null)
+              }}
+              placeholder={currentProvider.defaultModel}
+              className="font-mono text-[12.5px]"
+            />
+          </Field>
+        </div>
+
+        {/* Custom Base URL (if custom provider or if user sets custom URL) */}
+        {currentProviderKey === 'custom' || d.aiBaseUrl ? (
+          <Field label="API Base URL" htmlFor={id('ai-baseurl')} hint="OpenAI-compatible completions endpoint base URL">
+            <Input
+              id={id('ai-baseurl')}
+              value={d.aiBaseUrl ?? currentProvider.defaultBaseUrl ?? ''}
+              onChange={(e) => {
+                onChange({ aiBaseUrl: e.target.value })
+                setTestResult(null)
+              }}
+              placeholder={currentProvider.defaultBaseUrl || 'https://api.openai.com/v1'}
+              className="font-mono text-[12.5px]"
+            />
+          </Field>
+        ) : null}
+
+        {/* API Key Input */}
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <label htmlFor={id('ai-key')} className="text-[12.5px] font-medium text-ink-2">
+              {currentProvider.keyName}
+            </label>
+            <a
+              href={currentProvider.keyDocUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-[11.5px] font-medium text-signal hover:underline"
+            >
+              Get API key <ExternalLink className="size-3" />
+            </a>
+          </div>
+          <div className="relative">
+            <Input
+              id={id('ai-key')}
+              type={showKey ? 'text' : 'password'}
+              value={d.aiApiKey ?? ''}
+              onChange={(e) => {
+                onChange({ aiApiKey: e.target.value, aiVerified: false })
+                setTestResult(null)
+              }}
+              placeholder={currentProvider.keyPlaceholder}
+              className="font-mono pr-9 text-[12.5px]"
+              autoComplete="off"
+            />
+            <button
+              type="button"
+              onClick={() => setShowKey(!showKey)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-ink p-1"
+              aria-label={showKey ? 'Hide API key' : 'Show API key'}
+            >
+              {showKey ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+            </button>
+          </div>
+        </div>
+
+        {/* Real-time Live API Test Button */}
+        <div>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={handleTestLive}
+            disabled={isTesting || (!hasKey && currentProviderKey !== 'custom')}
+            className="w-full justify-center"
+          >
+            <Sparkles className={cn('size-3.5 text-signal', isTesting ? 'animate-spin' : '')} />
+            {isTesting ? 'Checking Live Real-Time API…' : 'Check Real-time API'}
+          </Button>
+
+          {/* Test Result Display */}
+          {testResult ? (
+            <div
+              className={cn(
+                'mt-2 rounded-md border p-2.5 text-[12px]',
+                testResult.ok
+                  ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300'
+                  : 'border-fault/25 bg-fault-soft text-fault'
+              )}
+            >
+              {testResult.ok ? (
+                <div>
+                  <p className="font-semibold flex items-center gap-1.5 text-emerald-700 dark:text-emerald-400">
+                    <Check className="size-3.5" /> Live API Connected!
+                  </p>
+                  <p className="mt-0.5 text-muted">
+                    Responded in {testResult.latencyMs}ms • Model: <span className="font-mono">{testResult.model}</span>
+                  </p>
+                  <p className="mt-1 italic text-ink-2 truncate">
+                    “{testResult.reply}”
+                  </p>
+                </div>
+              ) : (
+                <div>
+                  <p className="font-semibold text-fault">Connection Failed</p>
+                  <p className="mt-0.5 leading-snug">{testResult.error}</p>
+                </div>
+              )}
+            </div>
+          ) : null}
+        </div>
+      </section>
+
+      {/* ── STEP 2: AI Prompt & Instructions ── */}
+      <section className="space-y-3">
+        <div className="flex items-center gap-2">
+          <Wand2 className="size-4 text-purple-600" />
+          <div>
+            <span className="block text-[13px] font-semibold text-ink">2. AI Prompt & Instructions</span>
+            <span className="block text-[11.5px] text-muted">Enter what needs to be done by the AI at this step</span>
+          </div>
+        </div>
+
+        {/* Quick prompt templates */}
+        <div>
+          <p className="mb-1 text-[11.5px] font-medium text-muted">Quick Prompt Templates:</p>
+          <div className="flex flex-wrap gap-1">
+            {PROMPT_TEMPLATES.map((tmpl) => (
+              <button
+                key={tmpl.title}
+                type="button"
+                onClick={() => applyPromptTemplate(tmpl)}
+                className="rounded border border-line-strong bg-paper px-2 py-0.5 text-[11px] text-ink-2 hover:border-signal hover:text-signal"
+              >
+                + {tmpl.title}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <Field
+          label="AI Prompt / Instructions"
+          htmlFor={id('ins')}
+          hint="Instruct the AI on what it should do (e.g. answer queries, recommend services, qualify leads)."
+        >
+          <Textarea
+            id={id('ins')}
+            value={d.instruction ?? ''}
+            onChange={(e) => onChange({ instruction: e.target.value })}
+            placeholder="e.g. Answer the customer's question helpfully using company knowledge..."
+            className="min-h-32 text-[13px] leading-relaxed"
+          />
+        </Field>
+
+        {/* Variables chips */}
+        {variables.length ? (
+          <div>
+            <p className="mb-1 text-[11.5px] font-medium text-muted">Insert Saved Variable:</p>
+            <div className="flex flex-wrap gap-1">
+              {variables.map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => insertVariable(v)}
+                  className="rounded border border-line bg-paper px-2 py-0.5 font-mono text-[11px] text-ink-2 hover:border-signal hover:text-signal"
+                >
+                  {`{{${v}}}`}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {/* Conversation Mode */}
+        <fieldset>
+          <legend className="mb-1.5 text-[12.5px] font-medium text-ink-2">Conversation Mode</legend>
+          <div className="grid gap-1.5">
+            {(
+              [
+                ['once', 'Answer once, then proceed', 'Answers customer inquiry then proceeds to the next box in the flow'],
+                ['chat', 'Keep chatting (Interactive)', 'Maintains back-and-forth chat until customer types an exit keyword'],
+              ] as const
+            ).map(([v, title, sub]) => (
+              <label
+                key={v}
+                className={cn(
+                  'cursor-pointer rounded-md border px-3 py-2 transition-all',
+                  (d.mode ?? 'once') === v ? 'border-signal bg-signal-soft/50' : 'border-line hover:bg-paper'
+                )}
+              >
+                <input
+                  type="radio"
+                  className="sr-only"
+                  checked={(d.mode ?? 'once') === v}
+                  onChange={() => onChange({ mode: v })}
+                />
+                <span className="block text-[12.5px] font-medium">{title}</span>
+                <span className="block text-[11.5px] text-muted">{sub}</span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+
+        {d.mode === 'chat' ? (
+          <>
+            <Field label="First message / Greeting" htmlFor={id('intro')} hint="Sent when this box starts, before customer types anything">
+              <Input
+                id={id('intro')}
+                value={d.intro ?? ''}
+                onChange={(e) => onChange({ intro: e.target.value })}
+                placeholder="Sure! How can I assist you with our services today?"
+              />
+            </Field>
+            <Field label="Exit keywords" htmlFor={id('exit')} hint="Comma separated. Typing one follows the arrow out of this box.">
+              <Input
+                id={id('exit')}
+                value={d.exitKeywords ?? ''}
+                onChange={(e) => onChange({ exitKeywords: e.target.value })}
+                placeholder="menu, back, exit, done, agent"
+              />
+            </Field>
+          </>
+        ) : null}
+      </section>
+    </div>
+  )
+}
 
 function ButtonsFields({
   d,

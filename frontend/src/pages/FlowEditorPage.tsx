@@ -379,7 +379,7 @@ function Editor() {
 
         {/* ── Right panel ── */}
         {panel === 'inspect' && selected ? (
-          <div className="w-80 shrink-0">
+          <div className="w-80 sm:w-96 shrink-0">
             <Inspector
               key={selected.id}
               node={{ id: selected.id, type: selected.type as BoxType, data: selected.data as BoxData }}
@@ -394,7 +394,7 @@ function Editor() {
             />
           </div>
         ) : panel === 'test' ? (
-          <div className="w-80 shrink-0">
+          <div className="w-80 sm:w-96 shrink-0">
             <TestPanel flowId={id} onClose={() => setPanel(null)} />
           </div>
         ) : null}

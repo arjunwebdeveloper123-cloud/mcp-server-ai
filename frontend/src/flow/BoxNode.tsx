@@ -26,7 +26,7 @@ export const BoxNode = memo(function BoxNode({ type, data, selected }: NodeProps
   return (
     <div
       className={cn(
-        'w-60 overflow-hidden rounded-lg border bg-panel text-left shadow-sm transition-shadow',
+        'w-64 overflow-hidden rounded-lg border bg-panel text-left shadow-sm transition-shadow',
         selected ? 'border-signal shadow-[0_0_0_3px_rgb(39_71_214/0.18)]' : 'border-line-strong'
       )}
     >
@@ -34,9 +34,27 @@ export const BoxNode = memo(function BoxNode({ type, data, selected }: NodeProps
       {t !== 'start' ? <Handle type="target" position={Position.Top} className={handleCls} /> : null}
 
       <div className="px-3 pt-2.5 pb-2">
-        <p className="flex items-center gap-1.5 text-[11.5px] font-medium text-muted">
-          <Icon className={cn('size-3.5', tone.icon)} aria-hidden /> {meta.title}
-        </p>
+        <div className="flex items-center gap-1.5 text-[11.5px] font-medium text-muted">
+          <Icon className={cn('size-3.5', tone.icon)} aria-hidden />
+          <span>{meta.title}</span>
+          {t === 'ai' ? (
+            d.aiApiKey ? (
+              d.aiVerified ? (
+                <span className="ml-auto inline-flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+                  <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" /> Live
+                </span>
+              ) : (
+                <span className="ml-auto rounded bg-signal-soft px-1.5 py-0.5 text-[10px] font-medium text-signal">
+                  Key set
+                </span>
+              )
+            ) : (
+              <span className="ml-auto rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-400">
+                ⚠️ Setup Key
+              </span>
+            )
+          ) : null}
+        </div>
         <p className="mt-0.5 truncate text-[13.5px] font-semibold text-ink">{d.label || meta.title}</p>
         {summary(t, d) ? <p className="mt-1 line-clamp-2 text-[12px] leading-snug text-muted">{summary(t, d)}</p> : null}
       </div>

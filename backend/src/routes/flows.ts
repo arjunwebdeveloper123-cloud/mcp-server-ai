@@ -3,6 +3,7 @@ import { Flow, Settings, getSettings } from "../models/index.js";
 import { validateFlow, type FlowEdge, type FlowNode } from "../services/flow.js";
 import { blankFlow, templateFlow } from "../services/flowTemplate.js";
 import { listAllToolNames } from "../mcp/manager.js";
+import { testNodeAiKey } from "../services/providers/nodeAi.js";
 import { asyncH, HttpError } from "../http.js";
 
 export const flowsRouter = Router();
@@ -60,6 +61,19 @@ flowsRouter.post(
     const start = req.body?.template ? templateFlow() : blankFlow();
     const f = await Flow.create({ name: name.slice(0, 80), ...start });
     res.status(201).json({ _id: f._id });
+  })
+);
+
+/** Real-time verification of an AI API key and model */
+flowsRouter.post(
+  "/test-ai-key",
+  asyncH(async (req, res) => {
+    const provider = String(req.body?.provider || "gemini");
+    const apiKey = String(req.body?.apiKey || "");
+    const model = req.body?.model ? String(req.body.model) : undefined;
+    const baseUrl = req.body?.baseUrl ? String(req.body.baseUrl) : undefined;
+    const result = await testNodeAiKey({ provider, apiKey, model, baseUrl });
+    res.json(result);
   })
 );
 

@@ -36,7 +36,7 @@ export type FlowRunContext = {
   state: Record<string, unknown>; // conversation.state (isme "flow" key)
   sessionId: string;
   channel: string;
-  askAI: (instruction: string, vars: Record<string, string>) => Promise<string>;
+  askAI: (instruction: string, vars: Record<string, string>, nodeData?: Record<string, unknown>) => Promise<string>;
   runTool: (name: string, input: Record<string, unknown>) => Promise<{ output: string; isError: boolean }>;
   emitHandoff: (vars: Record<string, string>) => void;
 };
@@ -181,7 +181,7 @@ export async function runFlow(ctx: FlowRunContext): Promise<FlowResult> {
         current = nextOf(waitingNode.id);
       } else {
         trace.push(`${label(waitingNode)}: AI reply`);
-        out.push(await ctx.askAI(interpolate(str(d.instruction), fs.vars), fs.vars));
+        out.push(await ctx.askAI(interpolate(str(d.instruction), fs.vars), fs.vars, d));
         return finish({ reply: "" });
       }
     }
@@ -244,7 +244,7 @@ export async function runFlow(ctx: FlowRunContext): Promise<FlowResult> {
           fs.nodeId = node.id;
           return finish({ reply: "" });
         }
-        out.push(await ctx.askAI(interpolate(str(d.instruction), fs.vars), fs.vars));
+        out.push(await ctx.askAI(interpolate(str(d.instruction), fs.vars), fs.vars, d));
         if (str(d.mode) === "chat") {
           fs.waiting = "ai";
           fs.nodeId = node.id;
@@ -339,6 +339,10 @@ export function validateFlow(nodes: FlowNode[], edges: FlowEdge[], toolNames: st
       }
     }
     if (n.type === "condition" && !str(n.data.variable)) errors.push(`"${name}": choose a variable to check.`);
+    if (n.type === "ai") {
+      if (!str(n.data.instruction).trim()) warnings.push(`"${name}": add instructions/prompt for what the AI should do.`);
+      if (!str(n.data.aiApiKey).trim()) warnings.push(`"${name}": no AI API key set (will fallback to default bot settings).`);
+    }
     if (n.type !== "start" && !incoming(n.id)) warnings.push(`"${name}" is not connected from any box — it will never run.`);
   }
   return { errors, warnings };

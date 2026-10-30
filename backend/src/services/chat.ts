@@ -3,6 +3,7 @@ import { runFlow, type FlowDoc } from "./flow.js";
 import { callTool, getClaudeTools } from "../mcp/manager.js";
 import { emit, emitToolEvents } from "./webhooks.js";
 import { getProvider } from "./providers/index.js";
+import { executeNodeAi } from "./providers/nodeAi.js";
 import { knowledgeBlock, searchKnowledge, type KnowledgeHit } from "./knowledge.js";
 import type { ChatTurn, RunTool } from "./providers/types.js";
 
@@ -112,19 +113,46 @@ export async function handleMessage(sessionId: string, text: string, channel = "
         runTool,
         emitHandoff: (vars) => emit("conversation.handoff", { sessionId, channel, variables: vars, lastMessage: text }),
         // Flow ka "AI reply" box
-        askAI: async (instruction, vars) => {
+        askAI: async (instruction, vars, nodeData) => {
           const knowledge = await getKnowledge();
+          const known = Object.entries(vars).filter(([k, v]) => v && k !== "lastMessage");
+          const extra =
+            (instruction ? `\n\nInstruction for this step: ${instruction}` : "") +
+            (known.length ? `\n\nWhat we already know about the customer: ${known.map(([k, v]) => `${k}=${v}`).join(", ")}` : "");
+          const fullPrompt = promptWith(knowledge) + extra;
+
+          // If this AI node has its own API key configured, use it directly!
+          const nodeApiKey = typeof nodeData?.aiApiKey === "string" ? nodeData.aiApiKey.trim() : "";
+          if (nodeApiKey) {
+            try {
+              const r = await executeNodeAi({
+                provider: typeof nodeData?.aiProvider === "string" ? nodeData.aiProvider : "gemini",
+                apiKey: nodeApiKey,
+                model: typeof nodeData?.aiModel === "string" ? nodeData.aiModel : undefined,
+                baseUrl: typeof nodeData?.aiBaseUrl === "string" ? nodeData.aiBaseUrl : undefined,
+                systemPrompt: fullPrompt,
+                history,
+              });
+              if (r.trim()) return r;
+            } catch (err) {
+              console.error(`[chat] node AI error (${nodeData?.aiProvider}):`, err);
+              toolLog.push({
+                name: `${nodeData?.aiProvider || "ai"}_node_error`,
+                input: {},
+                output: err instanceof Error ? err.message : String(err),
+                isError: true,
+                at: new Date(),
+              });
+            }
+          }
+
           if (provider.name === "demo") {
             // Demo me LLM nahi — uploaded files se seedha jawab, warna team ko bata do
             const top = knowledge[0];
             return top ? (top.text.length > 700 ? `${top.text.slice(0, 700).replace(/\s+\S*$/, "")}…` : top.text) : "Is sawaal ka jawab hamari team degi — wo jaldi aapse contact karenge.";
           }
-          const known = Object.entries(vars).filter(([k, v]) => v && k !== "lastMessage");
-          const extra =
-            (instruction ? `\n\nInstruction for this step: ${instruction}` : "") +
-            (known.length ? `\n\nWhat we already know about the customer: ${known.map(([k, v]) => `${k}=${v}`).join(", ")}` : "");
           try {
-            const r = await provider.reply({ history, settings: { ...baseSettings, systemPrompt: promptWith(knowledge) + extra }, tools, runTool, state: {}, knowledge });
+            const r = await provider.reply({ history, settings: { ...baseSettings, systemPrompt: fullPrompt }, tools, runTool, state: {}, knowledge });
             if (r.trim()) return r;
           } catch (err) {
             console.error(`[chat] ${provider.name} error in flow AI box:`, err);

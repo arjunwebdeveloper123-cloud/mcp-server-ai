@@ -124,6 +124,15 @@ export type Delivery = {
 
 export type DeliveryResult = { success: boolean; statusCode?: number; error?: string; durationMs: number }
 
+export type AiNodeTestResult = {
+  ok: boolean
+  reply?: string
+  error?: string
+  latencyMs: number
+  provider: string
+  model: string
+}
+
 export type IncomingHook = {
   _id: string
   name: string
