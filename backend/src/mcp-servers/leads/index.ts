@@ -2,7 +2,7 @@ import "dotenv/config";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { connectDB, Lead, SERVICES } from "./db.js";
+import { COMPANY, connectDB, Lead, SERVICES, SERVICE_IDS } from "./db.js";
 
 const server = new McpServer({ name: "lead-server", version: "1.0.0" });
 
@@ -23,7 +23,14 @@ server.registerTool(
     description: "List all services the company offers with starting prices. Use when the user asks what we do or about pricing.",
     inputSchema: {},
   },
-  async () => text(JSON.stringify(SERVICES, null, 2))
+  async () =>
+    text(
+      JSON.stringify(
+        SERVICES.map(({ id, name, startingPrice, summary, page }) => ({ id, name, startingPrice, summary, page })),
+        null,
+        2
+      ) + `\n\nAll prices + 18% GST. Full price list: ${COMPANY.pricingUrl}. Free demo: ${COMPANY.demoUrl}`
+    )
 );
 
 server.registerTool(
@@ -31,12 +38,14 @@ server.registerTool(
   {
     title: "Save lead",
     description:
-      "Save a customer enquiry. Call ONLY after you have collected the customer's name, a 10-digit phone number and the service they want. Confirm details with the user first.",
+      "Save a customer enquiry. Call ONLY after you have collected the customer's name, a 10-digit phone number and the service they want. Ask for company name and monthly volume if the customer is willing (optional). Confirm details with the user first.",
     inputSchema: {
       name: z.string().min(2).describe("Customer full name"),
       phone: z.string().regex(/^[6-9]\d{9}$/, "Indian 10-digit mobile number").describe("10-digit mobile number"),
-      service: z.enum(["website", "seo", "gmb", "social"]).describe("Service id from get_services"),
+      service: z.enum(SERVICE_IDS).describe("Service id from get_services"),
       email: z.string().email().optional(),
+      company: z.string().max(120).optional().describe("Customer's company / business name"),
+      volume: z.string().max(60).optional().describe("Expected messages per month, e.g. '1 lakh'"),
       message: z.string().max(500).optional().describe("Any extra requirement the customer shared"),
     },
   },
@@ -78,7 +87,10 @@ server.registerResource(
     contents: [
       {
         uri: uri.href,
-        text: "We are a digital agency in Delhi. Hours: Mon–Sat 10am–7pm. Phone/WhatsApp: +91-XXXXXXXXXX.",
+        text:
+          `${COMPANY.name} — ${COMPANY.about}\n` +
+          `Phone / WhatsApp: ${COMPANY.phone} · Email: ${COMPANY.email} · ${COMPANY.website}\n` +
+          `Head office: ${COMPANY.headOffice}. Other offices: ${COMPANY.otherOffices}.`,
       },
     ],
   })
@@ -107,10 +119,10 @@ server.registerPrompt(
 async function main() {
   await connectDB(process.env.MONGO_URI ?? "mongodb://127.0.0.1:27017/chatbot");
   await server.connect(new StdioServerTransport());
-  console.error("[mcp-server] running on stdio");
+  console.error("[leads-server] running on stdio");
 }
 
 main().catch((err) => {
-  console.error("[mcp-server] fatal:", err);
+  console.error("[leads-server] fatal:", err);
   process.exit(1);
 });

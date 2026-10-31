@@ -1,8 +1,8 @@
 import { useMutation } from '@tanstack/react-query'
-import { Bot, Cpu, KeyRound, PlugZap, Sparkles } from 'lucide-react'
+import { Bot, KeyRound, PlugZap, Sparkles } from 'lucide-react'
 import { PageHeader } from '@/components/layout/AppLayout'
 import { Button } from '@/components/ui/button'
-import { Field, Input, Select, Textarea } from '@/components/ui/input'
+import { Field, Input, Textarea } from '@/components/ui/input'
 import { Badge, CodeBlock, ErrorNote, Section, Spinner, StatusDot } from '@/components/ui/bits'
 import { api, type AiTestResult, type ProviderSetting, type Settings } from '@/lib/api'
 import { cn } from '@/lib/utils'
@@ -12,7 +12,6 @@ const PROVIDERS: { value: ProviderSetting; title: string; sub: string; icon: typ
   { value: 'auto', title: 'Automatic', sub: 'Claude key → Claude, else Free API key → Free API, else Demo', icon: Sparkles },
   { value: 'demo', title: 'Demo mode', sub: 'Free. Fixed script, no AI — uses your real MCP tools', icon: Bot },
   { value: 'openai', title: 'Free API', sub: 'Groq, Gemini, OpenRouter or any OpenAI-compatible key', icon: KeyRound },
-  { value: 'ollama', title: 'Ollama (local AI)', sub: 'Free. Open-source model on your own computer', icon: Cpu },
   { value: 'claude', title: 'Claude', sub: 'Best quality. Needs ANTHROPIC_API_KEY', icon: Sparkles },
 ]
 
@@ -39,8 +38,6 @@ export function SettingsPage() {
 
   const payload: Partial<Settings> = {
     provider: draft.provider,
-    ollamaUrl: draft.ollamaUrl,
-    ollamaModel: draft.ollamaModel,
     openaiBaseUrl: draft.openaiBaseUrl,
     openaiModel: draft.openaiModel,
     systemPrompt: draft.systemPrompt,
@@ -102,7 +99,7 @@ export function SettingsPage() {
           ) : null
         }
       >
-        <div className="grid gap-2 p-5 sm:grid-cols-2 lg:grid-cols-5" role="radiogroup" aria-label="AI provider">
+        <div className="grid gap-2 p-5 sm:grid-cols-2 lg:grid-cols-4" role="radiogroup" aria-label="AI provider">
           {PROVIDERS.map(({ value, title, sub, icon: Icon }) => (
             <label
               key={value}
@@ -185,49 +182,6 @@ export function SettingsPage() {
           </div>
         ) : null}
 
-        {/* ── Ollama ── */}
-        {draft.provider === 'ollama' ? (
-          <div className="grid gap-5 border-t border-line p-5 lg:grid-cols-2">
-            <div className="grid content-start gap-4">
-              <Field label="Ollama URL" htmlFor="s-ollama-url" hint="Default when Ollama runs on this computer">
-                <Input id="s-ollama-url" value={draft.ollamaUrl} onChange={(e) => set('ollamaUrl', e.target.value)} className="font-mono" />
-              </Field>
-              <Field label="Model" htmlFor="s-ollama-model" hint="Pick one that supports tool calling: qwen2.5, llama3.1, mistral-nemo">
-                {ai?.ollama?.models.length ? (
-                  <Select id="s-ollama-model" value={draft.ollamaModel} onChange={(e) => set('ollamaModel', e.target.value)} className="font-mono">
-                    {!ai.ollama.models.includes(draft.ollamaModel) ? <option value={draft.ollamaModel}>{draft.ollamaModel} (not downloaded)</option> : null}
-                    {ai.ollama.models.map((m) => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
-                    ))}
-                  </Select>
-                ) : (
-                  <Input id="s-ollama-model" value={draft.ollamaModel} onChange={(e) => set('ollamaModel', e.target.value)} className="font-mono" />
-                )}
-              </Field>
-              <div>
-                <Button variant="secondary" onClick={() => test.mutate({ provider: 'ollama', ollamaUrl: draft.ollamaUrl, ollamaModel: draft.ollamaModel })} disabled={test.isPending}>
-                  {test.isPending ? <Spinner className="size-3.5" /> : <PlugZap />} Test connection
-                </Button>
-                {testResult}
-                <ErrorNote error={test.error} />
-              </div>
-            </div>
-            <div>
-              <p className="mb-1.5 text-[13px] font-medium text-ink-2">Set up Ollama once (Windows)</p>
-              <ol className="mb-3 list-decimal space-y-1 pl-5 text-[13px] text-muted">
-                <li>Download and install from ollama.com</li>
-                <li>Open PowerShell and download a model (about 4.7 GB)</li>
-                <li>Keep Ollama running, then test here</li>
-              </ol>
-              <CodeBlock>{`ollama pull ${draft.ollamaModel || 'qwen2.5:7b'}
-ollama list        # downloaded models`}</CodeBlock>
-              <p className="mt-2 text-[12.5px] text-muted">Needs about 8 GB RAM. On a slower PC try qwen2.5:3b — faster, but follows the flow less reliably.</p>
-            </div>
-          </div>
-        ) : null}
-
         {effective === 'demo' ? (
           <div className="border-t border-line px-5 py-4 text-[13px] text-muted">
             Demo mode understands services and pricing questions, collects name → phone → service and saves the lead, checks enquiry status by phone, and
@@ -239,7 +193,7 @@ ollama list        # downloaded models`}</CodeBlock>
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         <Section
           title="Instructions"
-          description={usesPrompt ? 'Write the conversation flow step by step. Mention when to use which tool.' : 'Used by Claude, Free API and Ollama. Demo mode follows its own fixed flow.'}
+          description={usesPrompt ? 'Write the conversation flow step by step. Mention when to use which tool.' : 'Used by Claude and the Free API. Demo mode follows its own fixed flow.'}
           actions={
             query.data?.recommendedPrompt && draft.systemPrompt !== query.data.recommendedPrompt ? (
               <Button variant="ghost" size="sm" onClick={() => set('systemPrompt', query.data!.recommendedPrompt!)}>

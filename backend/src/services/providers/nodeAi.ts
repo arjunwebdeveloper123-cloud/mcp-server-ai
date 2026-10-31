@@ -33,7 +33,7 @@ export type ExecuteNodeAiParams = {
 export const DEFAULT_MODELS: Record<string, string> = {
   gemini: "gemini-3.8-flash",
   openai: "gpt-4o-mini",
-  anthropic: "claude-3-5-haiku-20241022",
+  anthropic: "claude-haiku-5-5",
   groq: "llama-3.3-70b-versatile",
   custom: "meta-llama/llama-3.3-70b-instruct:free",
 };

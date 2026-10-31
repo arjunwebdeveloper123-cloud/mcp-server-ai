@@ -1,4 +1,5 @@
 import type { Provider, ProviderContext } from "./types.js";
+import { SERVICES, detectService, serviceLabel } from "../../company.js";
 
 /*  Demo mode — koi AI nahi, koi API key nahi, bilkul free.
     Ek fixed step-by-step flow (state machine) jo keywords samajhta hai aur
@@ -25,19 +26,13 @@ const APPT_STAGES: Stage[] = ["appt_date", "appt_time", "appt_name", "appt_phone
 const CANCEL_STAGES: Stage[] = ["appt_cancel_phone", "appt_cancel_pick", "appt_cancel_confirm"];
 const LEAD_STAGES: Stage[] = ["ask_name", "ask_phone", "ask_service", "confirm"];
 
-const SERVICE_WORDS: [string, RegExp][] = [
-  ["website", /\b(website|web ?site|site|web|landing page|ecommerce|e-commerce)\b/],
-  ["seo", /\b(seo|search engine|ranking|google rank)\b/],
-  ["gmb", /\b(gmb|google business|google my business|business profile|maps?)\b/],
-  ["social", /\b(social|instagram|insta|facebook|fb|reels|smm)\b/],
-];
 
 const RX = {
   greeting: /^(hi+|hello+|hey+|helo|namaste|namaskar|good (morning|afternoon|evening))\b/,
   services: /(service|price|pricing|rate|cost|kitna|kitne|charges?|package|kya karte|kya dete|kya kya|offer)/,
   status: /(status|enquiry|inquiry|meri request|follow ?up|update)/,
   wantsLead: /(banwani|banwana|banana|chahiye|chaiye|want|need|interested|contact|call me)/,
-  appointment: /(meeting|appointment|appoint|consultation|book (a )?call|call book|schedule|slot|milna|mulakat|demo call)/,
+  appointment: /(meeting|appointment|appoint|consultation|book (a )?call|call book|schedule|slot|milna|mulakat|\bdemo\b)/,
   apptCancel: /(\b(cancel|radd)\b.*\b(meeting|appointment|booking)\b|\b(meeting|appointment|booking)\b.*\b(cancel|radd)\b)/,
   myBookings: /\b(meri|my|mere)\b.*\b(meeting|appointment|booking)s?\b/,
   yes: /^(haan|han|ha|hn|yes|yeah|yep|y|ok|okay|theek|thik|sahi|correct|confirm|ji|bilkul|done)\b/,
@@ -54,8 +49,13 @@ function extractPhone(text: string) {
   return compact.match(/(?:\+?91)?([6-9]\d{9})(?!\d)/)?.[1];
 }
 
-function extractService(lower: string) {
-  return SERVICE_WORDS.find(([, rx]) => rx.test(lower))?.[0];
+/** Service pehchano — naam se ("whatsapp api") ya list ke number se ("2") */
+function extractService(lower: string, byNumber = false) {
+  if (byNumber) {
+    const n = Number(lower.trim().match(/^(\d)\b/)?.[1]);
+    if (n >= 1 && n <= SERVICES.length) return SERVICES[n - 1].id;
+  }
+  return detectService(lower);
 }
 
 function cleanName(raw: string) {
@@ -75,8 +75,9 @@ function extractName(text: string) {
 
 function formatServices(json: string) {
   try {
-    const list = JSON.parse(json) as { id: string; name: string; startingPrice?: string }[];
-    return list.map((s) => `• ${s.name}${s.startingPrice ? ` — ${s.startingPrice} se shuru` : ""}`).join("\n");
+    const [data, ...rest] = json.split("\n\n"); // JSON + "All prices + GST…" line
+    const list = JSON.parse(data) as { id: string; name: string; startingPrice?: string }[];
+    return list.map((s) => `• ${s.name}${s.startingPrice ? ` — ${s.startingPrice}` : ""}`).join("\n") + (rest.length ? `\n\n${rest.join("\n\n")}` : "");
   } catch {
     return json;
   }
@@ -191,7 +192,7 @@ function strictName(text: string) {
   return m ? cleanName(m[1]) : undefined;
 }
 
-const SERVICE_PROMPT = "Aapko kaunsi service chahiye? Website, SEO, Google Business Profile (GMB) ya Social media?";
+const SERVICE_PROMPT = `Aapko kaunsi service chahiye? Number ya naam likhein:\n${SERVICES.map((s, i) => `${i + 1}. ${s.short}`).join("\n")}`;
 
 export const demoProvider: Provider = {
   name: "demo",
@@ -297,7 +298,7 @@ export const demoProvider: Provider = {
     const collecting = ["ask_name", "ask_phone", "ask_service"].includes(stage);
     if (RX.services.test(lower) && !extractPhone(text)) {
       const tool = findTool(ctx, "get_services");
-      let list = "Website, SEO, Google Business Profile aur Social media.";
+      let list = SERVICES.map((s) => `• ${s.name}`).join("\n");
       if (tool) {
         const r = await ctx.runTool(tool, {});
         if (!r.isError) list = formatServices(r.output);
@@ -307,7 +308,7 @@ export const demoProvider: Provider = {
     }
 
     /* ── Lead collect karna ── */
-    const svc = extractService(lower);
+    const svc = extractService(lower, stage === "ask_service");
     const phone = extractPhone(text);
     let name = extractName(text);
     // "Aapka naam?" ke jawab me sirf naam likha ho
@@ -333,14 +334,14 @@ export const demoProvider: Provider = {
     const top = ctx.knowledge[0];
     if (top && !RX.greeting.test(lower)) {
       const body = top.text.length > 700 ? `${top.text.slice(0, 700).replace(/\s+\S*$/, "")}…` : top.text;
-      return `${body}\n\nAur kuch jaanna ho to poochiye. Enquiry ya meeting ke liye "mujhe website banwani hai" ya "meeting book karni hai" likhein.`;
+      return `${body}\n\nAur kuch jaanna ho to poochiye. Enquiry ya meeting ke liye "mujhe bulk WhatsApp chahiye" ya "demo book karna hai" likhein.`;
     }
 
     /* ── Greeting / fallback ── */
     if (RX.greeting.test(lower))
-      return `Namaste! 👋 Main ${ctx.settings.botName} hoon. Aap services/pricing pooch sakte hain, apni requirement share kar sakte hain, meeting book kar sakte hain, ya purani enquiry ka status check kar sakte hain.`;
+      return `Namaste! 👋 Main ${ctx.settings.botName} hoon. Aap services/pricing pooch sakte hain, apni requirement share kar sakte hain, free demo book kar sakte hain, ya purani enquiry ka status check kar sakte hain.`;
 
-    return 'Main aapki in cheezon me madad kar sakta hoon:\n• Services aur pricing ("aap kya services dete ho?")\n• Nayi enquiry ("mujhe website banwani hai")\n• Meeting book karna ("kal 4 baje meeting chahiye")\n• Enquiry status ("meri enquiry ka status")';
+    return 'Main aapki in cheezon me madad kar sakta hoon:\n• Services aur pricing ("aap kya services dete ho?")\n• Nayi enquiry ("mujhe bulk SMS chahiye")\n• Free demo / meeting book karna ("kal 4 baje demo chahiye")\n• Enquiry status ("meri enquiry ka status")';
   },
 };
 
@@ -352,7 +353,7 @@ function nextQuestion(lead: Lead) {
 }
 
 function labelOf(id?: string) {
-  return { website: "Website", seo: "SEO", gmb: "Google Business Profile", social: "Social media" }[id ?? ""] ?? id ?? "";
+  return serviceLabel(id);
 }
 
 function confirmText(l: Lead) {

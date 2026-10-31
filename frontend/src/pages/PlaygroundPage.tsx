@@ -122,7 +122,7 @@ export function PlaygroundPage() {
               id="pg-input"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Mera naam Rahul hai, mujhe website banwani hai…"
+              placeholder="Mera naam Rahul hai, mujhe bulk SMS chahiye…"
               maxLength={2000}
               className="h-10 flex-1 rounded-md border border-line-strong px-3 text-[14px] focus-visible:outline-signal"
             />
@@ -132,7 +132,7 @@ export function PlaygroundPage() {
           </form>
         </section>
 
-        <Section title="What the bot did" description="Newest first: flow steps, file parts sent to the AI, and real MCP tool calls.">
+        <Section title="What the bot did" description="Newest first: flow steps, file data the AI asked for (or was sent), and real MCP tool calls.">
           <div className="max-h-[540px] overflow-y-auto">
             {logs.length === 0 ? (
               <div className="flex flex-col items-center px-6 py-10 text-center text-[13px] text-muted">
@@ -146,13 +146,23 @@ export function PlaygroundPage() {
                     <div className="mb-1.5 flex items-center gap-2">
                       {l.name === 'flow' ? (
                         <Badge tone="signal">Flow</Badge>
-                      ) : l.name === 'knowledge_search' ? (
+                      ) : l.name === 'knowledge_search' || l.name === 'knowledge_fallback' ? (
                         <Badge tone="signal">Files</Badge>
+                      ) : l.name.startsWith('knowledge__') ? (
+                        <Badge tone={l.isError ? 'fault' : 'live'}>AI asked</Badge>
                       ) : (
                         <Badge tone={l.isError ? 'fault' : 'live'}>{l.isError ? 'Error' : 'OK'}</Badge>
                       )}
                       <code className="min-w-0 flex-1 truncate font-mono text-[12.5px] font-medium">
-                        {l.name === 'flow' ? 'flow steps' : l.name === 'knowledge_search' ? 'sent to AI from files' : l.name}
+                        {l.name === 'flow'
+                          ? 'flow steps'
+                          : l.name === 'knowledge_search'
+                            ? 'sent to AI from files'
+                            : l.name === 'knowledge_fallback'
+                              ? 'model can’t use tools → files sent'
+                              : l.name.startsWith('knowledge__')
+                                ? `MCP · ${l.name.slice('knowledge__'.length)}`
+                                : l.name}
                       </code>
                       <span className="text-[12px] text-muted">
                         msg {l.turn}

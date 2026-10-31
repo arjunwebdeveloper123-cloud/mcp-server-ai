@@ -9,7 +9,17 @@ import { ExportButton, Pager, Segmented } from '@/components/ui/export'
 import { api, type Lead, type LeadList } from '@/lib/api'
 import { timeAgo } from '@/lib/utils'
 
-const SERVICE: Record<string, string> = { website: 'Website', seo: 'SEO', gmb: 'Google Business Profile', social: 'Social media' }
+// backend/src/company.ts ki service ids → dashboard me dikhne wale naam
+const SERVICE: Record<string, string> = {
+  whatsapp_marketing: 'Bulk WhatsApp',
+  whatsapp_api: 'WhatsApp API',
+  bulk_sms: 'Bulk SMS',
+  sms_api: 'SMS API',
+  voice_call: 'Voice Call',
+  email: 'Bulk Email',
+  rcs: 'RCS',
+  smpp: 'SMPP',
+}
 type StatusFilter = 'all' | Lead['status']
 
 export function LeadsPage() {
@@ -109,6 +119,9 @@ export function LeadsPage() {
                   <tr key={l._id}>
                     <td className="px-5 py-2.5">
                       <p className="font-medium">{l.name}</p>
+                      {l.company || l.volume ? (
+                        <p className="text-[12.5px] text-muted">{[l.company, l.volume && `${l.volume} / month`].filter(Boolean).join(' · ')}</p>
+                      ) : null}
                       {l.message ? <p className="max-w-xs truncate text-[12.5px] text-muted">{l.message}</p> : null}
                     </td>
                     <td className="px-3 py-2.5">

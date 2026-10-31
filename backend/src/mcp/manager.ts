@@ -242,27 +242,37 @@ function withTimeout<T>(p: Promise<T>, ms: number, msg: string): Promise<T> {
   });
 }
 
-/** Project ke saath aane wale MCP servers.
+/** Project ke saath aane wale MCP servers — sab backend/src/mcp-servers/ ke andar, backend ke packages se chalte hain.
     Har ek sirf EK BAAR apne aap judta hai — aap dashboard se delete karoge to wapas nahi aayega. */
 const BUILT_IN_SERVERS = [
-  {
-    name: "Lead server (built-in)",
-    slug: "leads",
-    path: process.env.MCP_SERVER_PATH ?? "../mcp-server/src/index.ts",
-  },
-  {
-    name: "Appointment server (built-in)",
-    slug: "appointments",
-    path: process.env.APPOINTMENT_SERVER_PATH ?? "../appointment-server/src/index.ts",
-  },
+  { name: "Lead server (built-in)", slug: "leads", path: "./src/mcp-servers/leads/index.ts" },
+  { name: "Appointment server (built-in)", slug: "appointments", path: "./src/mcp-servers/appointments/index.ts" },
+  // Uploaded files (.md / pdf / docx) ka data — LLM khud tool call karke maangta hai
+  { name: "Knowledge server (built-in)", slug: "knowledge", path: "./src/mcp-servers/knowledge/index.ts" },
+];
+
+/** Purane folders (mcp-server/, appointment-server/, mcp-servers/knowledge.ts) wale saved paths → naye paths */
+const OLD_PATHS: [RegExp, string][] = [
+  [/(^|[\\/])mcp-server[\\/]src[\\/]index\.ts$/, "./src/mcp-servers/leads/index.ts"],
+  [/(^|[\\/])appointment-server[\\/]src[\\/]index\.ts$/, "./src/mcp-servers/appointments/index.ts"],
+  [/(^|[\\/])src[\\/]mcp-servers[\\/]knowledge\.ts$/, "./src/mcp-servers/knowledge/index.ts"],
 ];
 
 export async function seedDefaultServer() {
+  // 1) Folder merge se pehle save hue servers ka path theek karo (warna "Connection closed")
+  for (const doc of await McpServer.find({ transport: "stdio" })) {
+    const args = (doc.args ?? []).map((a) => OLD_PATHS.find(([re]) => re.test(a))?.[1] ?? a);
+    if (args.join("\u0000") !== (doc.args ?? []).join("\u0000")) {
+      await McpServer.updateOne({ _id: doc._id }, { args });
+      console.log(`[mcp] "${doc.slug}" moved to ${args.at(-1)}`);
+    }
+  }
+  // 2) Naye built-in servers jodo
   const settings = await getSettings();
   const done = new Set(settings.seededServers ?? []);
   for (const s of BUILT_IN_SERVERS) {
     if (done.has(s.slug)) continue;
-    if (!fs.existsSync(path.resolve(s.path))) continue; // folder hi nahi hai to skip
+    if (!fs.existsSync(path.resolve(s.path))) continue; // file hi nahi hai to skip
     if (!(await McpServer.exists({ slug: s.slug }))) {
       await McpServer.create({ name: s.name, slug: s.slug, transport: "stdio", command: "npx", args: ["tsx", s.path] });
       console.log(`[mcp] added built-in server "${s.slug}"`);

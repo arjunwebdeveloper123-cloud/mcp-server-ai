@@ -1,7 +1,9 @@
 import { Router } from "express";
 import multer from "multer";
 import { KnowledgeChunk, KnowledgeDoc, Settings, getSettings } from "../models/index.js";
-import { addDocument, invalidateIndex, searchKnowledge } from "../services/knowledge.js";
+import { KNOWLEDGE_TOOL_PREFIX, addDocument, invalidateIndex, resolveKnowledgeMode, searchKnowledge } from "../services/knowledge.js";
+import { getClaudeTools } from "../mcp/manager.js";
+import { resolveProvider } from "../services/providers/index.js";
 import { asyncH, HttpError } from "../http.js";
 
 export const knowledgeRouter = Router();
@@ -17,7 +19,9 @@ knowledgeRouter.get(
     const s = await getSettings();
     const docs = await KnowledgeDoc.find().sort({ createdAt: -1 }).lean();
     res.json({
-      settings: { enabled: s.knowledgeEnabled, topK: s.knowledgeTopK, maxChars: s.knowledgeMaxChars },
+      settings: settingsOut(s),
+      // Abhi asal me kaunsa tarika chal raha hai (provider + knowledge server ke hisaab se)
+      access: accessStatus(s),
       docs,
       totals: { docs: docs.length, chunks: docs.reduce((n, d) => n + (d.chunkCount ?? 0), 0) },
     });
@@ -100,8 +104,25 @@ knowledgeRouter.put(
     if ("topK" in (req.body ?? {})) patch.knowledgeTopK = Math.min(Math.max(Number(req.body.topK) || 4, 1), 10);
     if ("maxChars" in (req.body ?? {})) patch.knowledgeMaxChars = Math.min(Math.max(Number(req.body.maxChars) || 2500, 500), 8000);
     await getSettings();
+    if ("mode" in (req.body ?? {})) {
+      if (!["auto", "tool", "inject"].includes(String(req.body.mode))) throw new HttpError(400, "Unknown mode");
+      patch.knowledgeMode = String(req.body.mode);
+    }
     await Settings.updateOne({ _id: "global" }, patch);
-    const s = await Settings.findById("global");
-    res.json({ enabled: s!.knowledgeEnabled, topK: s!.knowledgeTopK, maxChars: s!.knowledgeMaxChars });
+    const s = (await Settings.findById("global"))!;
+    res.json({ settings: settingsOut(s), access: accessStatus(s) });
   })
 );
+
+type KSettings = { knowledgeEnabled: boolean; knowledgeTopK: number; knowledgeMaxChars: number; knowledgeMode?: string | null; provider?: string | null };
+
+function settingsOut(s: KSettings) {
+  return { enabled: s.knowledgeEnabled, topK: s.knowledgeTopK, maxChars: s.knowledgeMaxChars, mode: s.knowledgeMode ?? "auto" };
+}
+
+function accessStatus(s: KSettings) {
+  const toolAvailable = getClaudeTools().some((t) => t.name === `${KNOWLEDGE_TOOL_PREFIX}search_knowledge`);
+  const provider = resolveProvider(s.provider);
+  const active = resolveKnowledgeMode(s.knowledgeMode, provider, { enabled: s.knowledgeEnabled, toolAvailable });
+  return { active, provider, toolAvailable };
+}

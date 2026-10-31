@@ -1,10 +1,11 @@
 import { Router, type Response } from "express";
 import { AppointmentRead, Conversation, LeadRead } from "../models/index.js";
+import { serviceLabel } from "../company.js";
 import { emit } from "../services/webhooks.js";
 import { asyncH, HttpError } from "../http.js";
 
 /*  Leads, Appointments ke dashboard pages + CSV export
-    Data mcp-server aur appointment-server likhte hain (leads / appointments collections). */
+    Data leads aur appointments MCP servers (backend/src/mcp-servers/) likhte hain (leads / appointments collections). */
 
 export const dataRouter = Router();
 
@@ -26,7 +27,7 @@ function leadQuery(q: Record<string, unknown>) {
   const search = String(q.q ?? "").trim();
   if (search) {
     const rx = new RegExp(escapeRx(search), "i");
-    filter.$or = [{ name: rx }, { phone: rx }, { email: rx }, { service: rx }];
+    filter.$or = [{ name: rx }, { phone: rx }, { email: rx }, { company: rx }, { service: rx }];
   }
   return filter;
 }
@@ -142,8 +143,8 @@ dataRouter.get(
       return sendCsv(
         res,
         `leads-${stamp}.csv`,
-        ["Name", "Phone", "Email", "Service", "Message", "Status", "Created (IST)"],
-        rows.map((l) => [l.name, l.phone, l.email, l.service, l.message, l.status ?? "new", istTime(l.createdAt)])
+        ["Name", "Phone", "Email", "Company", "Service", "Monthly volume", "Message", "Status", "Created (IST)"],
+        rows.map((l) => [l.name, l.phone, l.email, l.company, serviceLabel(l.service as string), l.volume, l.message, l.status ?? "new", istTime(l.createdAt)])
       );
     }
 

@@ -81,7 +81,7 @@ export function WidgetChat({ preview }: { preview?: WidgetConfig }) {
 
   if (!config) return <div className="grid h-full place-items-center bg-white text-sm text-muted">Loading…</div>
   const color = config.brandColor
-  const shown: Msg[] = preview ? [{ role: 'user', content: 'Mujhe website banwani hai' }] : messages
+  const shown: Msg[] = preview ? [{ role: 'user', content: 'WhatsApp API ka rate kya hai?' }] : messages
 
   return (
     <div className="flex h-full min-h-[420px] flex-col bg-white text-ink">

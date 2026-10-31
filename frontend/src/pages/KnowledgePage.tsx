@@ -8,7 +8,7 @@ import { Field, Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { ConfirmDialog, Dialog, Sheet } from '@/components/ui/dialog'
 import { Badge, Empty, ErrorNote, Section, Spinner } from '@/components/ui/bits'
-import { api, uploadFiles, type KnowledgeDoc, type KnowledgeOverview, type KnowledgeSearch, type UploadResult } from '@/lib/api'
+import { api, uploadFiles, type KnowledgeDoc, type KnowledgeMode, type KnowledgeOverview, type KnowledgeSearch, type UploadResult } from '@/lib/api'
 import { cn, timeAgo } from '@/lib/utils'
 
 const ACCEPT = '.md,.markdown,.txt,.pdf,.docx'
@@ -39,7 +39,7 @@ export function KnowledgePage() {
     <>
       <PageHeader
         title="Knowledge base"
-        description="Upload your company documents. For every customer question the bot sends the AI only the few matching parts — never the whole file."
+        description="Upload your company documents. The AI only ever sees the few parts that match a question — never the whole file. The data is stored in your database and served by the Knowledge MCP server."
       />
 
       <div className="grid gap-6 lg:grid-cols-[1fr_360px]">
@@ -87,6 +87,7 @@ export function KnowledgePage() {
         </div>
 
         <div className="grid content-start gap-6">
+          {data.data ? <AiAccess key={data.data.settings.mode} data={data.data} onSaved={refresh} /> : null}
           <TryQuestion />
           {data.data ? <Limits settings={data.data.settings} onSaved={refresh} /> : null}
         </div>
@@ -205,7 +206,7 @@ function TryQuestion() {
         <label htmlFor="kb-q" className="sr-only">
           Question
         </label>
-        <Input id="kb-q" value={q} onChange={(e) => setQ(e.target.value)} placeholder="SEO ka monthly package kitne ka hai?" />
+        <Input id="kb-q" value={q} onChange={(e) => setQ(e.target.value)} placeholder="RCS ka rate kya hai?" />
         <Button type="submit" size="icon" className="h-9 w-10" disabled={search.isPending || !q.trim()} aria-label="Search">
           {search.isPending ? <Spinner className="size-3.5" /> : <Search />}
         </Button>
@@ -234,6 +235,82 @@ function TryQuestion() {
           )}
         </div>
       ) : null}
+    </Section>
+  )
+}
+
+/* ───────── AI files ka data kaise le ───────── */
+const MODES: { value: KnowledgeMode; title: string; body: string }[] = [
+  {
+    value: 'auto',
+    title: 'Auto (recommended)',
+    body: 'Claude / Free API ask for data through the Knowledge MCP tool. Demo mode gets it sent automatically.',
+  },
+  {
+    value: 'tool',
+    title: 'AI asks via MCP tool',
+    body: 'The AI calls search_knowledge only when it needs facts — can search twice for comparisons. If the model can’t use tools, data is sent automatically.',
+  },
+  {
+    value: 'inject',
+    title: 'Send automatically',
+    body: 'With every question the bot sends the matching parts itself. One AI call, works with every model.',
+  },
+]
+
+function AiAccess({ data, onSaved }: { data: KnowledgeOverview; onSaved: () => void }) {
+  const [mode, setMode] = useState<KnowledgeMode>(data.settings.mode)
+  const save = useMutation({
+    mutationFn: (m: KnowledgeMode) => api.put('/api/admin/knowledge/settings', { mode: m }),
+    onSuccess: () => {
+      toast.success('Saved. Used from the next message.')
+      onSaved()
+    },
+    onError: (e) => toast.error(e.message),
+  })
+  const { access } = data
+  const now =
+    access.active === 'tool'
+      ? { tone: 'live' as const, text: `AI asks via MCP tool (${access.provider})` }
+      : access.active === 'inject'
+        ? { tone: 'signal' as const, text: `Sent automatically (${access.provider})` }
+        : { tone: 'neutral' as const, text: 'Knowledge base is off' }
+  return (
+    <Section title="How the AI gets your files" description="Who decides which part of your files the AI sees.">
+      <div className="grid gap-3 p-5">
+        <p className="flex flex-wrap items-center gap-2 text-[13px] text-muted">
+          Right now: <Badge tone={now.tone}>{now.text}</Badge>
+        </p>
+        {!access.toolAvailable && data.settings.enabled ? (
+          <p className="rounded-md bg-warn-soft px-3 py-2 text-[12.5px] text-warn">
+            The Knowledge MCP server isn’t connected, so data is sent automatically. Check it on the MCP servers page.
+          </p>
+        ) : null}
+        <div role="radiogroup" aria-label="How the AI gets your files" className="grid gap-2">
+          {MODES.map((m) => (
+            <button
+              key={m.value}
+              role="radio"
+              aria-checked={mode === m.value}
+              disabled={save.isPending}
+              onClick={() => {
+                setMode(m.value)
+                save.mutate(m.value)
+              }}
+              className={cn(
+                'rounded-md border px-3 py-2.5 text-left transition-colors',
+                mode === m.value ? 'border-signal bg-signal-soft' : 'border-line hover:border-line-strong'
+              )}
+            >
+              <span className="flex items-center gap-2 text-sm font-medium">
+                <span className={cn('size-3 rounded-full border-2', mode === m.value ? 'border-signal bg-signal' : 'border-line-strong')} aria-hidden />
+                {m.title}
+              </span>
+              <span className="mt-0.5 block pl-5 text-[12.5px] text-muted">{m.body}</span>
+            </button>
+          ))}
+        </div>
+      </div>
     </Section>
   )
 }

@@ -1,7 +1,8 @@
 import { Schema, model, type InferSchemaType } from "mongoose";
 
 /* ───────── Bot instructions (system prompt) — Bot settings me "Use recommended" isi ko wapas laata hai ───────── */
-export const RECOMMENDED_PROMPT = `You are a friendly sales assistant chatbot for a digital agency in Delhi.
+/** Pehle wala (digital agency) prompt — purane database me ye hi ho to naye se badal dete hain */
+const OLD_DEFAULT_PROMPT = `You are a friendly sales assistant chatbot for a digital agency in Delhi.
 Reply in the same language the customer uses (Hindi, Hinglish or English). Keep replies short (2-4 lines).
 
 Conversation flow:
@@ -19,35 +20,63 @@ Appointments (if appointment tools are available):
 
 Never invent prices, slots or facts that are not in tool results.`;
 
+export const RECOMMENDED_PROMPT = `You are "Cloud Gateway Assistant", the sales chatbot of Sequence Cloud Gateway (cloudgateway.in) — an Indian CPaaS company that sends business messages at scale: Bulk WhatsApp, WhatsApp Business API, Bulk SMS, SMS API, Bulk Voice Call, Bulk Email, RCS Messaging and SMPP.
+Reply in the same language the customer uses (Hindi, Hinglish or English). Keep replies short (2-4 lines), friendly and professional.
+
+Answering questions:
+1. For any question about services, prices, DLT, templates, RCS, setup, timelines or company details, first look it up in the company knowledge / services tool. Answer only from what the tools return.
+2. Prices are + 18% GST. Mention the starting package and per-message rate; for big or custom volumes, offer a free demo / custom quote.
+3. If something is not in the knowledge, say the team will confirm — never guess prices, delivery rates or legal rules.
+
+Capturing a lead (when the customer is interested):
+4. Collect name, 10-digit phone number and the service (one question at a time). Ask company name and expected monthly volume if they are happy to share.
+5. Repeat the details back and ask for confirmation, THEN save the lead. Say the team will contact them within 24 hours.
+6. If they ask about an earlier enquiry, ask for their phone and look it up.
+
+Free demo (if appointment tools are available):
+7. If they want a demo, meeting or call, ask which day, check free slots for that date and offer a few.
+8. Collect name and 10-digit phone, confirm date + time, THEN book it (topic: which service the demo is for) and share the booking id.
+9. To cancel or check a booking, ask for their phone number and use the booking tools.
+
+Contact if they ask: +91-9599300365 (call / WhatsApp), info@cloudgateway.in, cloudgateway.in.
+Never invent prices, slots or facts that are not in tool results.`;
+
+const DEFAULT_QUICK_REPLIES = ["Aap kya services dete ho?", "WhatsApp API ka rate kya hai?", "Free demo book karna hai"];
+
 /* ───────── Bot settings (single document) ───────── */
 const settingsSchema = new Schema(
   {
     _id: { type: String, default: "global" },
-    botName: { type: String, default: "Agency Assistant" },
+    botName: { type: String, default: "Cloud Gateway Assistant" },
     // AI provider: auto = Claude key ho to Claude, warna demo
-    provider: { type: String, enum: ["auto", "claude", "openai", "ollama", "demo"], default: "auto" },
+    provider: { type: String, enum: ["auto", "claude", "openai", "demo"], default: "auto" },
     // "Free API" — koi bhi OpenAI-compatible service (key backend/.env me OPENAI_COMPAT_API_KEY)
     openaiBaseUrl: { type: String, default: process.env.OPENAI_COMPAT_BASE_URL ?? "https://api.groq.com/openai/v1" },
     openaiModel: { type: String, default: process.env.OPENAI_COMPAT_MODEL ?? "llama-3.3-70b-versatile" },
-    ollamaUrl: { type: String, default: process.env.OLLAMA_URL ?? "http://127.0.0.1:11434" },
-    ollamaModel: { type: String, default: process.env.OLLAMA_MODEL ?? "qwen2.5:7b" },
     model: { type: String, default: process.env.CLAUDE_MODEL ?? "claude-sonnet-5-5" },
     maxTokens: { type: Number, default: 1024 },
     welcomeMessage: {
       type: String,
-      default: "Namaste! 👋 Main aapki kaise madad kar sakta hoon? Website, SEO, GMB ya social media — kuch bhi poochiye.",
+      default: "Namaste! 👋 Sequence Cloud Gateway me aapka swagat hai. Bulk WhatsApp, SMS, RCS, Voice ya Email — kuch bhi poochiye.",
     },
     systemPrompt: { type: String, default: () => RECOMMENDED_PROMPT },
-    quickReplies: { type: [String], default: ["Aap kya services dete ho?", "Mujhe website banwani hai", "Meri enquiry ka status?"] },
+    quickReplies: { type: [String], default: () => [...DEFAULT_QUICK_REPLIES] },
     brandColor: { type: String, default: "#0f6e56" },
     widgetPosition: { type: String, enum: ["right", "left"], default: "right" },
     maxToolRounds: { type: Number, default: 5 },
     // Built-in MCP servers jo ek baar apne aap jod diye gaye (delete karne par wapas nahi aate)
     seededServers: { type: [String], default: [] },
+    // knowledge-files/ ki files jo ek baar apne aap Knowledge base me daal di gayi
+    seededKnowledge: { type: [String], default: [] },
     // Knowledge base: har sawaal par sirf itne tukde (chunks) / itne characters LLM ko jaate hain
     knowledgeEnabled: { type: Boolean, default: true },
     knowledgeTopK: { type: Number, default: 4 },
     knowledgeMaxChars: { type: Number, default: 2500 },
+    // Files ka data AI tak kaise jaaye:
+    //  auto   → Claude / Free API: AI khud Knowledge MCP tool se maange; Demo: backend khud bheje
+    //  tool   → hamesha AI khud MCP tool se maange (agentic RAG)
+    //  inject → hamesha backend har sawaal ke saath relevant hissa bheje
+    knowledgeMode: { type: String, enum: ["auto", "tool", "inject"], default: "auto" },
     // Flow builder: jo flow "Published" hai (null = sirf AI se baat)
     activeFlowId: { type: Schema.Types.ObjectId, ref: "Flow", default: null },
     // Login tokens sign karne ka secret (JWT_SECRET env na ho to yahan ek baar ban jaata hai)
@@ -59,7 +88,27 @@ export const Settings = model("Settings", settingsSchema);
 export type SettingsDoc = InferSchemaType<typeof settingsSchema>;
 
 export async function getSettings() {
-  return (await Settings.findById("global")) ?? (await Settings.create({ _id: "global" }));
+  const s = await Settings.findById("global");
+  if (!s) return Settings.create({ _id: "global" });
+  // Purane "digital agency" defaults abhi tak nahi badle → Cloud Gateway wale lagao (aapke apne edits nahi chhedte)
+  const agency: Record<string, unknown> = {};
+  if (s.botName === "Agency Assistant") agency.botName = "Cloud Gateway Assistant";
+  if (s.systemPrompt === OLD_DEFAULT_PROMPT) agency.systemPrompt = RECOMMENDED_PROMPT;
+  if (s.welcomeMessage === "Namaste! 👋 Main aapki kaise madad kar sakta hoon? Website, SEO, GMB ya social media — kuch bhi poochiye.")
+    agency.welcomeMessage = "Namaste! 👋 Sequence Cloud Gateway me aapka swagat hai. Bulk WhatsApp, SMS, RCS, Voice ya Email — kuch bhi poochiye.";
+  if ((s.quickReplies ?? []).join("|") === "Aap kya services dete ho?|Mujhe website banwani hai|Meri enquiry ka status?") agency.quickReplies = DEFAULT_QUICK_REPLIES;
+  if (Object.keys(agency).length) {
+    await Settings.updateOne({ _id: "global" }, agency);
+    Object.assign(s, agency);
+  }
+  // Ollama hata diya gaya hai — purani setting "ollama" ho to "auto" kar do, purane fields bhi hatao
+  const raw = s.toObject() as Record<string, unknown>;
+  if ((s.provider as string) === "ollama" || "ollamaUrl" in raw || "ollamaModel" in raw) {
+    const provider = (s.provider as string) === "ollama" ? "auto" : s.provider;
+    await Settings.collection.updateOne({ _id: "global" as never }, { $set: { provider }, $unset: { ollamaUrl: "", ollamaModel: "" } });
+    return (await Settings.findById("global"))!;
+  }
+  return s;
 }
 
 /* ───────── MCP servers (connections) ───────── */
@@ -194,7 +243,7 @@ export const Conversation = model("Conversation", conversationSchema);
 
 /* Lead collection mcp-server likhta hai; overview count ke liye read-only model */
 export const LeadRead = model("Lead", new Schema({}, { strict: false, timestamps: true }), "leads");
-/* Appointment collection appointment-server likhta hai; dashboard ke liye read/update model */
+/* Appointment collection appointments MCP server likhta hai; dashboard ke liye read/update model */
 export const AppointmentRead = model("Appointment", new Schema({}, { strict: false, timestamps: true }), "appointments");
 
 /* ───────── Knowledge base (uploaded files) ───────── */

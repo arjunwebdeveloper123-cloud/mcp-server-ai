@@ -1,4 +1,4 @@
-/*  Har AI provider (Claude, Ollama, Demo) ek hi interface follow karta hai.
+/*  Har AI provider (Claude, Free API, Demo) ek hi interface follow karta hai.
     chat.ts ko farak nahi padta kaunsa provider chal raha hai.            */
 
 export type ChatTurn = { role: "user" | "assistant"; content: string };
@@ -17,8 +17,6 @@ export type ProviderSettings = {
   model: string;
   maxTokens: number;
   maxToolRounds: number;
-  ollamaUrl: string;
-  ollamaModel: string;
   openaiBaseUrl: string;
   openaiModel: string;
   botName: string;
@@ -31,11 +29,13 @@ export type ProviderContext = {
   runTool: RunTool;
   /** Uploaded files me se is sawaal ke liye chune gaye tukde (sirf relevant) */
   knowledge: { docName: string; title: string; text: string; score: number }[];
+  /** "AI khud maange" mode me: agar model tools use hi nahi kar sakta, to ye relevant file data deta hai (prompt me jodne ke liye) */
+  knowledgeFallback?: () => Promise<string>;
   /** Demo mode ka per-conversation state (DB me save hota hai) */
   state: Record<string, unknown>;
 };
 
-export type ProviderName = "claude" | "openai" | "ollama" | "demo";
+export type ProviderName = "claude" | "openai" | "demo";
 
 export interface Provider {
   name: ProviderName;

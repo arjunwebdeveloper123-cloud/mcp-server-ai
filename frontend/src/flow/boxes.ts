@@ -125,12 +125,12 @@ export const AI_PROVIDERS: Record<AiProvider, AiProviderInfo> = {
     keyName: 'Anthropic API Key',
     keyPlaceholder: 'sk-ant-api03-...',
     keyDocUrl: 'https://console.anthropic.com/settings/keys',
-    defaultModel: 'claude-3-5-haiku-20241022',
+    defaultModel: 'claude-haiku-5-5',
     defaultBaseUrl: 'https://api.anthropic.com',
     models: [
-      { id: 'claude-3-5-haiku-20241022', label: 'Claude 3.5 Haiku', badge: 'Recommended • Fast' },
-      { id: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet', badge: 'Best Intelligence' },
-      { id: 'claude-3-opus-20240229', label: 'Claude 3 Opus', badge: 'Deep Reasoning' },
+      { id: 'claude-haiku-5-5', label: 'Claude Haiku 5.5', badge: 'Recommended • Fast' },
+      { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5', badge: 'Best balance' },
+      { id: 'claude-opus-5-5', label: 'Claude Opus 5.5', badge: 'Most capable' },
     ],
   },
   groq: {
@@ -151,7 +151,7 @@ export const AI_PROVIDERS: Record<AiProvider, AiProviderInfo> = {
   custom: {
     id: 'custom',
     name: 'Custom / Other',
-    subtitle: 'OpenRouter, DeepSeek, Local Ollama, or OpenAI-compatible endpoint',
+    subtitle: 'OpenRouter, DeepSeek, or any OpenAI-compatible endpoint',
     keyName: 'API Key (if required)',
     keyPlaceholder: 'sk-or-... or leave blank for local',
     keyDocUrl: 'https://openrouter.ai/keys',
@@ -160,7 +160,6 @@ export const AI_PROVIDERS: Record<AiProvider, AiProviderInfo> = {
     models: [
       { id: 'meta-llama/llama-3.3-70b-instruct:free', label: 'Llama 3.3 70B (OpenRouter Free)', badge: 'Free' },
       { id: 'deepseek/deepseek-chat', label: 'DeepSeek Chat', badge: 'OpenRouter' },
-      { id: 'qwen2.5:7b', label: 'Qwen 2.5 7B (Ollama Local)', badge: 'Local' },
       { id: 'mistralai/mistral-large', label: 'Mistral Large', badge: 'Mistral' },
     ],
   },
@@ -224,7 +223,7 @@ export const BOXES: Record<BoxType, Meta> = {
     icon: GitBranch,
     tone: 'ink',
     inPalette: true,
-    defaults: () => ({ label: 'Check', variable: 'service', operator: 'equals', value: 'website' }),
+    defaults: () => ({ label: 'Check', variable: 'service', operator: 'equals', value: 'whatsapp_api' }),
   },
   ai: {
     title: 'AI reply',

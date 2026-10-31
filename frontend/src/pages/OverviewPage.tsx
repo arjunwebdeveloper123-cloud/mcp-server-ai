@@ -163,7 +163,6 @@ export function OverviewPage() {
 
 function providerLabel(active: Stats['ai']['active'], st?: Settings) {
   if (active === 'demo') return 'Demo mode · no AI'
-  if (active === 'ollama') return `Ollama · ${st?.ollamaModel ?? ''}`
   if (active === 'openai') return `Free API · ${st?.openaiModel ?? ''}`
   return `Claude · ${st?.model ?? ''}`
 }
@@ -257,7 +256,13 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           ) : (
             <details key={i} className="justify-self-start rounded-md border border-dashed border-line-strong px-3 py-2 text-[12.5px]">
               <summary className={cn('cursor-pointer font-mono', it.t.isError ? 'text-fault' : 'text-muted')}>
-                {it.t.name === 'flow' ? 'flow steps' : it.t.name === 'knowledge_search' ? 'file parts sent to AI' : `${it.t.isError ? 'failed' : 'used'} ${it.t.name}`}
+                {it.t.name === 'flow'
+                  ? 'flow steps'
+                  : it.t.name === 'knowledge_search' || it.t.name === 'knowledge_fallback'
+                    ? 'file parts sent to AI'
+                    : it.t.name.startsWith('knowledge__')
+                      ? `AI asked files: ${it.t.name.slice('knowledge__'.length)}`
+                      : `${it.t.isError ? 'failed' : 'used'} ${it.t.name}`}
               </summary>
               <CodeBlock className="mt-2 whitespace-pre-wrap">{`input:  ${JSON.stringify(it.t.input)}\noutput: ${it.t.output}`}</CodeBlock>
             </details>

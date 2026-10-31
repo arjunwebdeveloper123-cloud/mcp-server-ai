@@ -60,7 +60,7 @@ server.registerTool(
       phone: PHONE.describe("10-digit mobile number"),
       date: DATE.describe("YYYY-MM-DD"),
       time: TIME.describe("HH:MM, 24-hour, exactly as returned by check_slots"),
-      topic: z.string().max(200).optional().describe("What they want to discuss, e.g. new website"),
+      topic: z.string().max(200).optional().describe("What they want to discuss, e.g. WhatsApp API demo"),
     },
   },
   async ({ name, phone, date, time, topic }) => {
