@@ -1,11 +1,29 @@
 import { useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Check, ExternalLink, Eye, EyeOff, KeyRound, Plus, Sparkles, Trash2, Wand2, X } from 'lucide-react'
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  ExternalLink,
+  Eye,
+  EyeOff,
+  GitBranch,
+  Globe,
+  KeyRound,
+  Plus,
+  Send,
+  Sparkles,
+  Trash2,
+  Wand2,
+  X,
+} from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Select, Textarea } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
-import { api, type McpServerItem, type AiNodeTestResult } from '@/lib/api'
+import { Badge, Spinner } from '@/components/ui/bits'
+import { api, type McpServerItem, type AiNodeTestResult, type ApiNodeTestResult } from '@/lib/api'
 import {
   BOXES,
   OPERATORS,
@@ -135,6 +153,9 @@ export function Inspector({ node, variables, onChange, onDelete, onClose, onOpti
 
         {/* ── Tool ── */}
         {node.type === 'tool' ? <ToolFields d={d} id={id} varHint={varHint} onChange={onChange} /> : null}
+
+        {/* ── API Request ── */}
+        {node.type === 'api' ? <ApiFields d={d} id={id} varHint={varHint} variables={variables} onChange={onChange} /> : null}
 
         {/* ── Webhook ── */}
         {node.type === 'webhook' ? (
@@ -702,6 +723,452 @@ function ToolFields({ d, id, varHint, onChange }: { d: BoxData; id: (k: string) 
         <Input id={id('rv')} value={d.resultVar ?? ''} onChange={(e) => onChange({ resultVar: slug(e.target.value) })} className="font-mono" placeholder="toolResult" />
       </Field>
       <p className="text-[12.5px] text-muted">Connect the Success and Error dots. If Error isn’t connected, Success is used.</p>
+    </>
+  )
+}
+
+/**
+ * API Request Node Inspector
+ * - HTTP Method selector (GET, POST, PUT, PATCH, DELETE)
+ * - URL field with {{variables}} support and quick variable inserter
+ * - Request Headers (JSON editor with quick Bearer token button)
+ * - Request Body (for POST, PUT, PATCH, DELETE with variables support)
+ * - Save response data as (resultVar) & status code as (statusVar)
+ * - Extract JSON path (responsePath)
+ * - Real-time Test API Request with status, latency, response body, and extracted field preview
+ */
+function ApiFields({
+  d,
+  id,
+  varHint: _varHint,
+  variables,
+  onChange,
+}: {
+  d: BoxData
+  id: (k: string) => string
+  varHint: string
+  variables: string[]
+  onChange: (p: Partial<BoxData>) => void
+}) {
+  const [isTesting, setIsTesting] = useState(false)
+  const [testResult, setTestResult] = useState<ApiNodeTestResult | null>(null)
+  const [showHeaders, setShowHeaders] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  const method = (d.method || 'GET') as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+  const hasBody = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)
+
+  let headersError = ''
+  if (d.headers?.trim()) {
+    try {
+      JSON.parse(d.headers.replace(/\{\{\s*[\w.]+\s*\}\}/g, '"dummy"'))
+    } catch {
+      headersError = 'Must be valid JSON, e.g. {"Authorization": "Bearer ..."}'
+    }
+  }
+
+  const handleTestApi = async () => {
+    const rawUrl = (d.url || '').trim()
+    if (!rawUrl) {
+      toast.error('Please enter an API URL first.')
+      return
+    }
+    if (!/^https?:\/\//i.test(rawUrl)) {
+      toast.error('URL must start with http:// or https://')
+      return
+    }
+
+    setIsTesting(true)
+    setTestResult(null)
+
+    // Substitute sample variable values if variables are used in testing
+    const sampleVars: Record<string, string> = {
+      name: 'John Doe',
+      phone: '9876543210',
+      email: 'john@example.com',
+      service: 'General Inquiry',
+    }
+    variables.forEach((v) => {
+      if (!sampleVars[v]) sampleVars[v] = `test_${v}`
+    })
+
+    const testUrl = rawUrl.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_m, k) => sampleVars[k] || 'test_val')
+    const testHeaders = (d.headers || '').replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_m, k) => sampleVars[k] || 'test_val')
+    const testBody = (d.body || '').replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_m, k) => sampleVars[k] || 'test_val')
+
+    try {
+      const res = await api.post<ApiNodeTestResult>('/api/admin/flows/test-api-node', {
+        method,
+        url: testUrl,
+        headers: testHeaders || undefined,
+        body: hasBody ? testBody : undefined,
+      })
+      setTestResult(res)
+      if (res.ok) {
+        toast.success(`API request successful (${res.status} ${res.statusText || 'OK'})`)
+      } else {
+        toast.error(`API returned ${res.status} ${res.statusText || 'Error'}`)
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Request failed'
+      setTestResult({
+        ok: false,
+        status: 0,
+        statusText: 'Failed',
+        latencyMs: 0,
+        error: msg,
+      })
+      toast.error(`API test failed: ${msg}`)
+    } finally {
+      setIsTesting(false)
+    }
+  }
+
+  // Calculate extracted field preview if responsePath is set and we have response data
+  const extractedValue = useMemo(() => {
+    if (!testResult?.data || !d.responsePath?.trim()) return undefined
+    const cleanPath = d.responsePath.trim().replace(/^(\$|\.)+/, '')
+    const parts = cleanPath.replace(/\[(\w+)\]/g, '.$1').split('.').filter(Boolean)
+    let curr: any = testResult.data
+    for (const part of parts) {
+      if (curr == null) return undefined
+      curr = curr[part]
+    }
+    return curr
+  }, [testResult?.data, d.responsePath])
+
+  const copyResponse = () => {
+    const textToCopy = testResult?.data ? JSON.stringify(testResult.data, null, 2) : testResult?.raw || ''
+    if (!textToCopy) return
+    navigator.clipboard.writeText(textToCopy)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+    toast.success('Response copied to clipboard')
+  }
+
+  const insertVariableIntoUrl = (varName: string) => {
+    const current = d.url || ''
+    onChange({ url: `${current}{{${varName}}}` })
+  }
+
+  const insertVariableIntoBody = (varName: string) => {
+    const current = d.body || ''
+    onChange({ body: `${current}{{${varName}}}` })
+  }
+
+  const addBearerHeader = () => {
+    let currentObj: Record<string, string> = {}
+    try {
+      currentObj = JSON.parse(d.headers || '{}')
+    } catch {
+      currentObj = { 'Content-Type': 'application/json' }
+    }
+    currentObj['Authorization'] = 'Bearer YOUR_TOKEN_HERE'
+    onChange({ headers: JSON.stringify(currentObj, null, 2) })
+  }
+
+  return (
+    <>
+      {/* ── Method & URL ── */}
+      <div>
+        <label className="block text-[12.5px] font-medium text-ink mb-1.5">HTTP Method</label>
+        <div className="flex flex-wrap gap-1">
+          {(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const).map((m) => {
+            const isSelected = method === m
+            return (
+              <button
+                key={m}
+                type="button"
+                onClick={() => onChange({ method: m })}
+                className={cn(
+                  'rounded px-2.5 py-1 font-mono text-[11.5px] font-bold transition-all',
+                  isSelected
+                    ? m === 'GET'
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : m === 'POST'
+                      ? 'bg-emerald-600 text-white shadow-sm'
+                      : m === 'PUT'
+                      ? 'bg-amber-600 text-white shadow-sm'
+                      : m === 'PATCH'
+                      ? 'bg-purple-600 text-white shadow-sm'
+                      : 'bg-rose-600 text-white shadow-sm'
+                    : 'bg-paper text-muted hover:bg-paper/80 hover:text-ink'
+                )}
+              >
+                {m}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      <Field label="API Endpoint URL" htmlFor={id('url')} hint="Supports {{variable}} dynamic replacement">
+        <Input
+          id={id('url')}
+          value={d.url ?? ''}
+          onChange={(e) => onChange({ url: e.target.value })}
+          placeholder="https://api.example.com/v1/resource"
+          className="font-mono text-[12.5px]"
+        />
+      </Field>
+
+      {variables.length ? (
+        <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted -mt-2">
+          <span>Add variable:</span>
+          {variables.map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => insertVariableIntoUrl(v)}
+              className="rounded bg-paper px-1.5 py-0.5 font-mono text-signal hover:bg-signal-soft"
+              title={`Append {{${v}}} to URL`}
+            >
+              {`{{${v}}}`}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {/* ── Headers (Collapsible / Expandable) ── */}
+      <div className="rounded-lg border border-line bg-paper/30 p-2.5">
+        <div className="flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => setShowHeaders(!showHeaders)}
+            className="flex items-center gap-1.5 text-[12.5px] font-medium text-ink hover:text-signal"
+          >
+            {showHeaders ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+            Request Headers (JSON)
+          </button>
+          <Button variant="ghost" size="sm" className="h-6 px-1.5 text-[11px]" onClick={addBearerHeader}>
+            + Add Bearer Auth
+          </Button>
+        </div>
+
+        {showHeaders ? (
+          <div className="mt-2 grid gap-1.5">
+            <Textarea
+              id={id('headers')}
+              value={d.headers ?? '{\n  "Content-Type": "application/json"\n}'}
+              onChange={(e) => onChange({ headers: e.target.value })}
+              className="min-h-24 font-mono text-[12px]"
+              spellCheck={false}
+            />
+            {headersError ? <p className="text-[11.5px] text-fault">{headersError}</p> : null}
+            <div className="flex justify-between text-[11px] text-muted">
+              <span>Supports {'{{variable}}'} in header values</span>
+              <button
+                type="button"
+                onClick={() => onChange({ headers: '{\n  "Content-Type": "application/json"\n}' })}
+                className="text-muted hover:text-ink underline"
+              >
+                Reset
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      {/* ── Request Body (for POST, PUT, PATCH, DELETE) ── */}
+      {hasBody ? (
+        <div className="grid gap-1.5">
+          <Field
+            label="Request Body (JSON / Text)"
+            htmlFor={id('body')}
+            hint="Supports {{variables}} inside JSON strings"
+          >
+            <Textarea
+              id={id('body')}
+              value={d.body ?? ''}
+              onChange={(e) => onChange({ body: e.target.value })}
+              placeholder={'{\n  "name": "{{name}}",\n  "phone": "{{phone}}"\n}'}
+              className="min-h-28 font-mono text-[12px]"
+              spellCheck={false}
+            />
+          </Field>
+          {variables.length ? (
+            <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted -mt-1">
+              <span>Insert in body:</span>
+              {variables.map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => insertVariableIntoBody(v)}
+                  className="rounded bg-paper px-1.5 py-0.5 font-mono text-signal hover:bg-signal-soft"
+                >
+                  {`{{${v}}}`}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* ── Save response variables ── */}
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Save response as" htmlFor={id('rv')} hint="Access via {{name}}">
+          <Input
+            id={id('rv')}
+            value={d.resultVar ?? 'apiResponse'}
+            onChange={(e) => onChange({ resultVar: slug(e.target.value) })}
+            className="font-mono text-[12px]"
+            placeholder="apiResponse"
+          />
+        </Field>
+        <Field label="Save status code as" htmlFor={id('sv')} hint="e.g. 200, 404">
+          <Input
+            id={id('sv')}
+            value={d.statusVar ?? 'apiStatus'}
+            onChange={(e) => onChange({ statusVar: slug(e.target.value) })}
+            className="font-mono text-[12px]"
+            placeholder="apiStatus"
+          />
+        </Field>
+      </div>
+
+      <Field
+        label="Extract JSON field (optional)"
+        htmlFor={id('rp')}
+        hint="e.g. data.id or items[0].name. Empty = entire response"
+      >
+        <Input
+          id={id('rp')}
+          value={d.responsePath ?? ''}
+          onChange={(e) => onChange({ responsePath: e.target.value })}
+          className="font-mono text-[12.5px]"
+          placeholder="e.g. data.user.id"
+        />
+      </Field>
+
+      {/* ── Output Wire Options ── */}
+      <div className="rounded-lg border border-line bg-paper/40 p-3">
+        <label className="block text-[12.5px] font-semibold text-ink mb-1 flex items-center gap-1.5">
+          <GitBranch className="size-3.5 text-signal" />
+          Output Wire Option
+        </label>
+        <p className="text-[12px] text-muted mb-2.5">
+          Choose how you want to connect this API node to other nodes:
+        </p>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => onChange({ outputMode: 'single' })}
+            className={cn(
+              'rounded-md border p-2.5 text-left transition-all',
+              (d.outputMode ?? 'single') === 'single'
+                ? 'border-signal bg-signal-soft text-signal-ink font-medium shadow-sm'
+                : 'border-line bg-panel text-muted hover:border-line-strong hover:text-ink'
+            )}
+          >
+            <span className="block text-[12.5px] font-semibold text-ink">Single Output Wire</span>
+            <span className="block text-[11px] leading-snug text-muted mt-1">
+              One wire at the bottom that always connects to the next step.
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onChange({ outputMode: 'branch' })}
+            className={cn(
+              'rounded-md border p-2.5 text-left transition-all',
+              d.outputMode === 'branch'
+                ? 'border-signal bg-signal-soft text-signal-ink font-medium shadow-sm'
+                : 'border-line bg-panel text-muted hover:border-line-strong hover:text-ink'
+            )}
+          >
+            <span className="block text-[12.5px] font-semibold text-ink">Success & Error Wires</span>
+            <span className="block text-[11px] leading-snug text-muted mt-1">
+              Separate Success (2xx) and Error wires to branch your flow.
+            </span>
+          </button>
+        </div>
+
+        <div className="mt-2.5 rounded bg-panel px-2.5 py-2 text-[11.5px] text-muted border border-line">
+          {(d.outputMode ?? 'single') === 'single' ? (
+            <p className="flex items-start gap-1.5">
+              <span className="size-2 mt-1 rounded-full bg-signal shrink-0" />
+              <span>
+                <strong>Bottom output wire enabled:</strong> Drag a connection from the round handle at the bottom of the API box to any other node.
+              </span>
+            </p>
+          ) : (
+            <p className="flex items-start gap-1.5">
+              <span className="size-2 mt-1 rounded-full bg-emerald-500 shrink-0" />
+              <span>
+                <strong>Branch wires enabled:</strong> Connect <strong>Success</strong> for HTTP 2xx and <strong>Error</strong> for 4xx/5xx/network errors (or bottom wire as fallback).
+              </span>
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* ── Live Test API Request ── */}
+      <div className="mt-1 rounded-lg border border-line bg-panel p-3">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-[12.5px] font-semibold text-ink flex items-center gap-1.5">
+            <Globe className="size-3.5 text-signal" />
+            Live API Test
+          </p>
+          {testResult ? (
+            <Badge tone={testResult.ok ? 'live' : 'fault'}>
+              {testResult.status ? `${testResult.status} ${testResult.statusText}` : 'Failed'}
+            </Badge>
+          ) : null}
+        </div>
+
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          onClick={handleTestApi}
+          disabled={isTesting}
+          className="w-full justify-center gap-2"
+        >
+          {isTesting ? <Spinner className="size-3.5" /> : <Send className="size-3.5" />}
+          {isTesting ? 'Sending Request…' : 'Test API Request Now'}
+        </Button>
+
+        {testResult ? (
+          <div className="mt-3 grid gap-2">
+            <div className="flex items-center justify-between text-[11.5px]">
+              <span className="text-muted flex items-center gap-1">
+                Response time: <strong className="text-ink">{testResult.latencyMs} ms</strong>
+              </span>
+              <button
+                type="button"
+                onClick={copyResponse}
+                className="flex items-center gap-1 text-muted hover:text-ink text-[11px]"
+              >
+                {copied ? <Check className="size-3 text-emerald-600" /> : <Copy className="size-3" />}
+                {copied ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+
+            {d.responsePath && extractedValue !== undefined ? (
+              <div className="rounded bg-paper p-2 font-mono text-[11.5px] border border-line">
+                <span className="text-muted">Extracted [{d.responsePath}]: </span>
+                <span className="font-semibold text-signal">
+                  {typeof extractedValue === 'object' ? JSON.stringify(extractedValue) : String(extractedValue)}
+                </span>
+              </div>
+            ) : null}
+
+            {testResult.error && !testResult.ok ? (
+              <div className="rounded bg-fault-soft p-2 text-[12px] text-fault">
+                {testResult.error}
+              </div>
+            ) : null}
+
+            <div className="relative max-h-48 overflow-y-auto rounded bg-paper/80 p-2 font-mono text-[11px] text-ink-2 border border-line">
+              <pre className="whitespace-pre-wrap break-all">
+                {testResult.data
+                  ? JSON.stringify(testResult.data, null, 2)
+                  : testResult.raw || '(Empty response)'}
+              </pre>
+            </div>
+          </div>
+        ) : null}
+      </div>
     </>
   )
 }

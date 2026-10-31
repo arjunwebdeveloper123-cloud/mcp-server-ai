@@ -134,6 +134,17 @@ export type AiNodeTestResult = {
   note?: string
 }
 
+export type ApiNodeTestResult = {
+  ok: boolean
+  status: number
+  statusText: string
+  latencyMs: number
+  headers?: Record<string, string>
+  data?: unknown
+  raw?: string
+  error?: string
+}
+
 export type IncomingHook = {
   _id: string
   name: string

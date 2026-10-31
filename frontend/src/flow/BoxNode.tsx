@@ -54,6 +54,24 @@ export const BoxNode = memo(function BoxNode({ type, data, selected }: NodeProps
               </span>
             )
           ) : null}
+          {t === 'api' ? (
+            <span
+              className={cn(
+                'ml-auto rounded px-1.5 py-0.5 font-mono text-[9.5px] font-bold uppercase',
+                d.method === 'POST'
+                  ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                  : d.method === 'PUT'
+                  ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                  : d.method === 'PATCH'
+                  ? 'bg-purple-500/15 text-purple-600 dark:text-purple-400'
+                  : d.method === 'DELETE'
+                  ? 'bg-rose-500/15 text-rose-600 dark:text-rose-400'
+                  : 'bg-blue-500/15 text-blue-600 dark:text-blue-400'
+              )}
+            >
+              {(d.method as string) || 'GET'}
+            </span>
+          ) : null}
         </div>
         <p className="mt-0.5 truncate text-[13.5px] font-semibold text-ink">{d.label || meta.title}</p>
         {summary(t, d) ? <p className="mt-1 line-clamp-2 text-[12px] leading-snug text-muted">{summary(t, d)}</p> : null}
@@ -68,7 +86,12 @@ export const BoxNode = memo(function BoxNode({ type, data, selected }: NodeProps
             </li>
           ))}
         </ul>
-      ) : outs.length === 1 ? (
+      ) : null}
+
+      {/* Output wire: Bottom handle for single wire or fallback */}
+      {!multi && outs.length === 1 ? (
+        <Handle type="source" position={Position.Bottom} className={handleCls} />
+      ) : multi && t === 'api' ? (
         <Handle type="source" position={Position.Bottom} className={handleCls} />
       ) : null}
     </div>

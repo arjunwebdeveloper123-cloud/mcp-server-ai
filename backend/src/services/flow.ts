@@ -16,7 +16,7 @@ import { parseDate, parseTime } from "./providers/demo.js";
 
     Conversation ka state (kaunse box par ruke hain, variables) MongoDB me conversation.state.flow me rehta hai. */
 
-export type NodeType = "start" | "message" | "question" | "buttons" | "condition" | "ai" | "tool" | "webhook" | "handoff" | "end";
+export type NodeType = "start" | "message" | "question" | "buttons" | "condition" | "ai" | "tool" | "api" | "webhook" | "handoff" | "end";
 export type FlowNode = { id: string; type: NodeType; position?: { x: number; y: number }; data: Record<string, unknown> };
 export type FlowEdge = { id: string; source: string; target: string; sourceHandle?: string | null };
 export type FlowDoc = { _id: unknown; name: string; nodes: FlowNode[]; edges: FlowEdge[] };
@@ -46,6 +46,20 @@ export type FlowResult = { reply: string; quickReplies?: string[]; needsHuman?: 
 const MAX_STEPS = 30; // galti se bana loop (A → B → A) atak na jaaye
 
 const str = (v: unknown) => (typeof v === "string" ? v : v == null ? "" : String(v));
+
+/** Extract nested property using dot/bracket path, e.g. "data.users[0].name" or "price" */
+export function getPathValue(obj: unknown, path: string): unknown {
+  if (!obj || typeof obj !== "object") return undefined;
+  const cleanPath = path.trim().replace(/^(\$|\.)+/, "");
+  if (!cleanPath) return obj;
+  const parts = cleanPath.replace(/\[(\w+)\]/g, ".$1").split(".").filter(Boolean);
+  let curr: any = obj;
+  for (const part of parts) {
+    if (curr == null) return undefined;
+    curr = curr[part];
+  }
+  return curr;
+}
 
 export function interpolate(template: string, vars: Record<string, string>) {
   return template.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_m, k: string) => vars[k] ?? "");
@@ -272,6 +286,87 @@ export async function runFlow(ctx: FlowRunContext): Promise<FlowResult> {
         break;
       }
 
+      case "api": {
+        const method = (str(d.method) || "GET").toUpperCase();
+        const rawUrl = str(d.url);
+        const url = interpolate(rawUrl, fs.vars).trim();
+        const resultVar = str(d.resultVar) || "apiResponse";
+        const statusVar = str(d.statusVar) || "apiStatus";
+        const responsePath = str(d.responsePath).trim();
+
+        let isSuccess = false;
+        let statusCode = 0;
+
+        if (!/^https?:\/\//i.test(url)) {
+          fs.vars[resultVar] = "Invalid URL: must start with http:// or https://";
+          fs.vars[statusVar] = "0";
+          trace.push(`api ${method} ${url} → invalid URL`);
+          current = nextOf(node.id, "error") ?? nextOf(node.id);
+          break;
+        }
+
+        let reqHeaders: Record<string, string> = {};
+        const rawHeaders = str(d.headers).trim();
+        if (rawHeaders) {
+          try {
+            const interpolatedHeaders = interpolate(rawHeaders, fs.vars);
+            reqHeaders = JSON.parse(interpolatedHeaders);
+          } catch {
+            fs.vars[resultVar] = "Headers must be valid JSON object";
+            fs.vars[statusVar] = "0";
+            trace.push(`api ${method} ${url} → invalid headers`);
+            current = nextOf(node.id, "error") ?? nextOf(node.id);
+            break;
+          }
+        }
+
+        let reqBody: string | undefined = undefined;
+        if (["POST", "PUT", "PATCH", "DELETE"].includes(method) && d.body) {
+          reqBody = interpolate(str(d.body), fs.vars);
+        }
+
+        try {
+          const res = await fetch(url, {
+            method,
+            headers: {
+              "User-Agent": "MCP-Chatbot-Flow/1.0",
+              ...reqHeaders,
+            },
+            body: reqBody,
+            signal: AbortSignal.timeout(15000),
+          });
+
+          statusCode = res.status;
+          isSuccess = res.ok;
+
+          const rawText = await res.text();
+          let responseData: unknown = rawText;
+          try {
+            responseData = JSON.parse(rawText);
+          } catch {
+            // retain raw text
+          }
+
+          let finalValue: unknown = responseData;
+          if (responsePath && typeof responseData === "object" && responseData !== null) {
+            finalValue = getPathValue(responseData, responsePath);
+          }
+
+          fs.vars[statusVar] = String(statusCode);
+          fs.vars[resultVar] = typeof finalValue === "object" && finalValue !== null ? JSON.stringify(finalValue) : String(finalValue ?? "");
+        } catch (err: unknown) {
+          isSuccess = false;
+          statusCode = 0;
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          fs.vars[statusVar] = "0";
+          fs.vars[resultVar] = `API Error: ${errorMsg}`;
+        }
+
+        trace.push(`api ${method} ${url} → ${statusCode} (${isSuccess ? "success" : "error"})`);
+        current = nextOf(node.id, isSuccess ? "success" : "error") ?? nextOf(node.id);
+        break;
+      }
+
       case "webhook": {
         const url = interpolate(str(d.url), fs.vars);
         let status = "skipped";
@@ -336,6 +431,17 @@ export function validateFlow(nodes: FlowNode[], edges: FlowEdge[], toolNames: st
         JSON.parse(str(n.data.args).replace(/\{\{\s*[\w.]+\s*\}\}/g, "x") || "{}");
       } catch {
         errors.push(`"${name}": arguments must be valid JSON.`);
+      }
+    }
+    if (n.type === "api") {
+      if (!str(n.data.url).trim()) errors.push(`"${name}": enter an API URL.`);
+      else if (!/^https?:\/\//i.test(str(n.data.url).trim())) errors.push(`"${name}": API URL must start with http:// or https://.`);
+      if (str(n.data.headers).trim()) {
+        try {
+          JSON.parse(str(n.data.headers).replace(/\{\{\s*[\w.]+\s*\}\}/g, "x"));
+        } catch {
+          errors.push(`"${name}": headers must be valid JSON.`);
+        }
       }
     }
     if (n.type === "condition" && !str(n.data.variable)) errors.push(`"${name}": choose a variable to check.`);

@@ -1,8 +1,8 @@
-import { Bot, Flag, GitBranch, Hand, ListChecks, MessageSquare, MessageCircleQuestion, Play, Plug, Webhook, type LucideIcon } from 'lucide-react'
+import { Bot, Flag, GitBranch, Globe, Hand, ListChecks, MessageSquare, MessageCircleQuestion, Play, Plug, Webhook, type LucideIcon } from 'lucide-react'
 
 /* Flow builder ke box types — palette, canvas aur inspector teeno yahi use karte hain */
 
-export type BoxType = 'start' | 'message' | 'question' | 'buttons' | 'condition' | 'ai' | 'tool' | 'webhook' | 'handoff' | 'end'
+export type BoxType = 'start' | 'message' | 'question' | 'buttons' | 'condition' | 'ai' | 'tool' | 'webhook' | 'handoff' | 'end' | 'api'
 export type ButtonOption = { id: string; label: string; value?: string }
 
 export type AiProvider = 'gemini' | 'openai' | 'anthropic' | 'groq' | 'custom'
@@ -33,6 +33,13 @@ export type BoxData = Record<string, unknown> & {
   aiBaseUrl?: string
   aiVerified?: boolean
   aiVerifiedAt?: string
+  // API Node settings
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+  headers?: string
+  body?: string
+  statusVar?: string
+  responsePath?: string
+  outputMode?: 'single' | 'branch'
 }
 
 export const uid = (p: string) => `${p}-${Math.random().toString(36).slice(2, 8)}`
@@ -228,6 +235,24 @@ export const BOXES: Record<BoxType, Meta> = {
     inPalette: true,
     defaults: () => ({ label: 'Run tool', tool: '', args: '{}', resultVar: 'toolResult' }),
   },
+  api: {
+    title: 'API request',
+    description: 'Call external REST API (GET, POST…)',
+    icon: Globe,
+    tone: 'live',
+    inPalette: true,
+    defaults: () => ({
+      label: 'API request',
+      method: 'GET',
+      url: 'https://',
+      headers: '{\n  "Content-Type": "application/json"\n}',
+      body: '',
+      resultVar: 'apiResponse',
+      statusVar: 'apiStatus',
+      responsePath: '',
+      outputMode: 'single',
+    }),
+  },
   webhook: {
     title: 'Webhook',
     description: 'Send the answers to a URL',
@@ -289,6 +314,12 @@ export function summary(type: BoxType, d: BoxData): string {
     }
     case 'tool':
       return d.tool ? `${d.tool}  → {{${d.resultVar || 'toolResult'}}}` : 'Choose a tool'
+    case 'api': {
+      const meth = d.method || 'GET'
+      const targetUrl = d.url || 'https://'
+      const resVar = d.resultVar || 'apiResponse'
+      return `${meth} ${targetUrl} → {{${resVar}}}`
+    }
     case 'webhook':
       return d.url ?? ''
     default:
@@ -304,6 +335,15 @@ export function outputs(type: BoxType, d: BoxData): { id: string | null; label?:
     { id: 'true', label: 'Yes' },
     { id: 'false', label: 'No' },
   ]
+  if (type === 'api') {
+    if (d.outputMode === 'branch') {
+      return [
+        { id: 'success', label: 'Success' },
+        { id: 'error', label: 'Error' },
+      ]
+    }
+    return [{ id: null }]
+  }
   if (type === 'tool') return [
     { id: 'success', label: 'Success' },
     { id: 'error', label: 'Error' },

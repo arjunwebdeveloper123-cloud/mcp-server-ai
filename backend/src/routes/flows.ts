@@ -8,7 +8,7 @@ import { asyncH, HttpError } from "../http.js";
 
 export const flowsRouter = Router();
 
-const NODE_TYPES = new Set(["start", "message", "question", "buttons", "condition", "ai", "tool", "webhook", "handoff", "end"]);
+const NODE_TYPES = new Set(["start", "message", "question", "buttons", "condition", "ai", "tool", "webhook", "handoff", "end", "api"]);
 
 /** Browser se aaya data saaf karo — sirf zaroori fields */
 function sanitize(body: Record<string, unknown>) {
@@ -74,6 +74,97 @@ flowsRouter.post(
     const baseUrl = req.body?.baseUrl ? String(req.body.baseUrl) : undefined;
     const result = await testNodeAiKey({ provider, apiKey, model, baseUrl });
     res.json(result);
+  })
+);
+
+/** Real-time testing of an API request node from Inspector */
+flowsRouter.post(
+  "/test-api-node",
+  asyncH(async (req, res) => {
+    const method = String(req.body?.method || "GET").toUpperCase();
+    const rawUrl = String(req.body?.url || "").trim();
+    const rawHeaders = req.body?.headers;
+    const rawBody = req.body?.body;
+
+    if (!rawUrl || !/^https?:\/\//i.test(rawUrl)) {
+      return res.json({
+        ok: false,
+        status: 0,
+        statusText: "Invalid URL",
+        latencyMs: 0,
+        error: "URL must begin with http:// or https://",
+      });
+    }
+
+    let headers: Record<string, string> = {};
+    if (typeof rawHeaders === "string" && rawHeaders.trim()) {
+      try {
+        headers = JSON.parse(rawHeaders);
+      } catch {
+        return res.json({
+          ok: false,
+          status: 0,
+          statusText: "Invalid Headers",
+          latencyMs: 0,
+          error: "Headers must be valid JSON",
+        });
+      }
+    } else if (rawHeaders && typeof rawHeaders === "object") {
+      headers = rawHeaders as Record<string, string>;
+    }
+
+    let bodyPayload: string | undefined = undefined;
+    if (["POST", "PUT", "PATCH", "DELETE"].includes(method) && rawBody !== undefined && rawBody !== null && rawBody !== "") {
+      bodyPayload = typeof rawBody === "string" ? rawBody : JSON.stringify(rawBody);
+    }
+
+    const startedAt = Date.now();
+    try {
+      const response = await fetch(rawUrl, {
+        method,
+        headers: {
+          "User-Agent": "MCP-Chatbot-Flow/1.0",
+          ...headers,
+        },
+        body: bodyPayload,
+        signal: AbortSignal.timeout(15000),
+      });
+
+      const latencyMs = Date.now() - startedAt;
+      const resHeaders: Record<string, string> = {};
+      response.headers.forEach((val, key) => {
+        resHeaders[key] = val;
+      });
+
+      const rawText = await response.text();
+      let parsedData: unknown = null;
+      try {
+        parsedData = JSON.parse(rawText);
+      } catch {
+        parsedData = null;
+      }
+
+      res.json({
+        ok: response.ok,
+        status: response.status,
+        statusText: response.statusText,
+        latencyMs,
+        headers: resHeaders,
+        data: parsedData,
+        raw: rawText.length > 5000 ? rawText.slice(0, 5000) + "\n... (truncated)" : rawText,
+        error: response.ok ? undefined : `HTTP ${response.status} ${response.statusText}`,
+      });
+    } catch (err: unknown) {
+      const latencyMs = Date.now() - startedAt;
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      res.json({
+        ok: false,
+        status: 0,
+        statusText: "Network/Timeout Error",
+        latencyMs,
+        error: errorMsg,
+      });
+    }
   })
 );
 
