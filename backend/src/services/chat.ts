@@ -215,9 +215,18 @@ export async function handleMessage(sessionId: string, text: string, channel = "
           }
 
           if (provider.name === "demo") {
-            // Demo me LLM nahi — uploaded files se seedha jawab, warna team ko bata do
+            // Demo me LLM nahi — box ka prompt (instruction) AI ke liye hai, customer ko KABHI nahi bhejna.
+            // "Knowledge + MCP" box → files ka sabse milta hissa; warna team ko bata do.
             const top = (isKnowledgeMcp && !knowledge.length ? await getKnowledge(selectedDocId !== "all" ? selectedDocId : undefined) : knowledge)[0];
-            return top ? (top.text.length > 700 ? `${top.text.slice(0, 700).replace(/\s+\S*$/, "")}…` : top.text) : (instruction || "Is sawaal ka jawab hamari team degi — wo jaldi aapse contact karenge.");
+            if (top) return top.text.length > 700 ? `${top.text.slice(0, 700).replace(/\s+\S*$/, "")}…` : top.text;
+            toolLog.push({
+              name: "demo_no_ai",
+              input: { responseSource },
+              output: "Demo mode me AI nahi hai — AI box ka prompt use nahi hota. Bot settings me Claude ya Free API chuno.",
+              isError: false,
+              at: new Date(),
+            });
+            return "Is sawaal ka jawab hamari team degi — wo jaldi aapse contact karenge. 🙏";
           }
           try {
             const r = await provider.reply({
