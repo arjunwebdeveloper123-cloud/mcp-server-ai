@@ -953,7 +953,7 @@ function ButtonsFields({
             <Plus /> Add button
           </Button>
         ) : null}
-        <p className="mt-1 text-[12px] text-muted">“value” is what gets saved (e.g. label “Google Business Profile”, value “gmb”). Empty = the label.</p>
+        <p className="mt-1 text-[12px] text-muted">“value” is what gets saved (e.g. label “WhatsApp API”, value “whatsapp_api”). Empty = the label.</p>
       </div>
       <Field label="If the customer types something else" htmlFor={id('fb')}>
         <Select id={id('fb')} value={d.fallback ?? 'repeat'} onChange={(e) => onChange({ fallback: e.target.value as 'repeat' | 'ai' })}>

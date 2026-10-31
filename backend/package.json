@@ -7,7 +7,10 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc && node -e \"require('fs').cpSync('src/public','dist/public',{recursive:true})\"",
     "start": "node dist/index.js",
-    "tunnel": "npx ngrok http 5000"
+    "tunnel": "npx ngrok http 5000",
+    "inspect:leads": "npx @modelcontextprotocol/inspector npx tsx src/mcp-servers/leads/index.ts",
+    "inspect:appointments": "npx @modelcontextprotocol/inspector npx tsx src/mcp-servers/appointments/index.ts",
+    "inspect:knowledge": "npx @modelcontextprotocol/inspector npx tsx src/mcp-servers/knowledge/index.ts"
   },
   "license": "ISC",
   "dependencies": {
@@ -21,7 +24,8 @@
     "mammoth": "^1.13.0",
     "mongoose": "^9.11.4",
     "multer": "^2.5.0",
-    "unpdf": "^1.9.1"
+    "unpdf": "^1.9.1",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/cookie-parser": "^1.4.10",

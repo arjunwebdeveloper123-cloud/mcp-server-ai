@@ -4,7 +4,7 @@ import { callTool, getClaudeTools } from "../mcp/manager.js";
 import { emit, emitToolEvents } from "./webhooks.js";
 import { getProvider } from "./providers/index.js";
 import { executeNodeAi } from "./providers/nodeAi.js";
-import { knowledgeBlock, searchKnowledge, type KnowledgeHit } from "./knowledge.js";
+import { KNOWLEDGE_TOOL_PREFIX, knowledgeBlock, knowledgeToolPrompt, resolveKnowledgeMode, searchKnowledge, type KnowledgeHit } from "./knowledge.js";
 import type { ChatTurn, RunTool } from "./providers/types.js";
 
 export type ToolLog = { name: string; input: unknown; output: string; isError: boolean; durationMs?: number; at?: Date };
@@ -21,7 +21,7 @@ const HISTORY_LIMIT = 30; // AI ko last 30 messages bhejte hain
 /*  Ek user message handle karo:
     conversation load → relevant knowledge → (published Flow  ya  AI provider) → MCP tools → reply → save → webhooks
     - Flow builder me koi flow "Published" hai to bot usi ke boxes follow karta hai (AI box me LLM)
-    - Warna seedha AI provider (Claude / Free API / Ollama / Demo) — Bot settings se            */
+    - Warna seedha AI provider (Claude / Free API / Demo) — Bot settings se            */
 export async function handleMessage(sessionId: string, text: string, channel = "widget", opts: { testFlowId?: string; initialVars?: Record<string, string>; startNodeId?: string } = {}) {
   const settings = await getSettings();
   const provider = getProvider(settings.provider);
@@ -86,19 +86,36 @@ export async function handleMessage(sessionId: string, text: string, channel = "
   };
 
   const state = { ...((convo.state as Record<string, unknown>) ?? {}) };
-  const tools = getClaudeTools().map((t) => ({ name: t.name, description: t.description ?? t.name, input_schema: t.input_schema as Record<string, unknown> }));
+  const allTools = getClaudeTools().map((t) => ({ name: t.name, description: t.description ?? t.name, input_schema: t.input_schema as Record<string, unknown> }));
+
+  /* ── Files ka data AI tak kaise jaaye (Knowledge page → "How the AI gets your files") ──
+     tool   → AI khud Knowledge MCP server ke tools call karke data maangta hai (agentic RAG)
+     inject → backend har sawaal ke saath relevant hissa khud bhejta hai (purana tarika, har model ke saath chalta hai) */
+  const knowledgeMode = resolveKnowledgeMode(settings.knowledgeMode, provider.name, {
+    enabled: settings.knowledgeEnabled,
+    toolAvailable: allTools.some((t) => t.name === `${KNOWLEDGE_TOOL_PREFIX}search_knowledge`),
+  });
+  // "tool" mode ke alawa knowledge tools AI ko mat dikhao — data do baar na jaaye
+  const tools = knowledgeMode === "tool" ? allTools : allTools.filter((t) => !t.name.startsWith(KNOWLEDGE_TOOL_PREFIX));
+  const toolHint = knowledgeMode === "tool" ? await knowledgeToolPrompt() : "";
+  // Model tools hi nahi samajhta → backend khud relevant hissa bhej de (backup)
+  const knowledgeFallback = async () => {
+    const hits = await getKnowledge();
+    toolLog.push({ name: "knowledge_fallback", input: {}, output: "This AI model can't use tools — file parts were sent automatically instead", isError: false, at: new Date() });
+    return knowledgeBlock(hits);
+  };
   const baseSettings = {
     model: settings.model,
     maxTokens: settings.maxTokens,
     maxToolRounds: settings.maxToolRounds,
-    ollamaUrl: settings.ollamaUrl,
-    ollamaModel: settings.ollamaModel,
     openaiBaseUrl: settings.openaiBaseUrl,
     openaiModel: settings.openaiModel,
     botName: settings.botName,
   };
   // Aaj ki date/time + sirf relevant knowledge — "kal 4 baje" aur company ke sawaal dono samajh sake
-  const promptWith = (knowledge: KnowledgeHit[]) => `${settings.systemPrompt}\n\n${nowLine()}${knowledgeBlock(knowledge)}`;
+  const promptWith = (knowledge: KnowledgeHit[]) => `${settings.systemPrompt}\n\n${nowLine()}${knowledgeBlock(knowledge)}${toolHint}`;
+  // inject mode me hi backend search kare; tool mode me AI khud maangega
+  const injected = async () => (knowledgeMode === "inject" ? getKnowledge() : []);
 
   let reply = "";
   let quickReplies: string[] | undefined;
@@ -121,6 +138,11 @@ export async function handleMessage(sessionId: string, text: string, channel = "
         emitHandoff: (vars) => emit("conversation.handoff", { sessionId, channel, variables: vars, lastMessage: text }),
         // Flow ka "AI reply" box
         askAI: async (instruction, vars, nodeData) => {
+          /* AI box ka "Response source":
+             prompt_only   → sirf box ka prompt — na files, na MCP tools
+             knowledge_mcp → company files + MCP tools
+               · ek specific file chuni ho, ya box me MCP band ho → backend us file ka relevant hissa khud bhejta hai
+               · "All files" + MCP on → Knowledge page ki setting (Auto / AI asks via MCP tool / Send automatically) */
           const responseSource = (nodeData?.responseSource as string) || "prompt_only";
           const isKnowledgeMcp = responseSource === "knowledge_mcp";
           const selectedDocId = (nodeData?.selectedDocId as string) || "all";
@@ -129,17 +151,27 @@ export async function handleMessage(sessionId: string, text: string, channel = "
           let knowledge: KnowledgeHit[] = [];
           let mcpToolsDesc = "";
           let activeTools = enableMcp ? tools : [];
+          let boxToolHint = "";
+          let boxFallback: (() => Promise<string>) | undefined;
 
           if (isKnowledgeMcp) {
-            knowledge = await getKnowledge(selectedDocId !== "all" ? selectedDocId : undefined);
-            if (enableMcp && tools.length) {
-              mcpToolsDesc = `\n\nConnected MCP Server Tools and capabilities:\n${tools.map((t) => `- ${t.name}: ${t.description}`).join("\n")}`;
+            const oneFile = selectedDocId !== "all";
+            if (oneFile || !enableMcp) {
+              // Ek file ka data (ya MCP band) → backend khud bhejta hai; knowledge tools AI ko nahi dikhte
+              knowledge = await getKnowledge(oneFile ? selectedDocId : undefined);
+              activeTools = activeTools.filter((t) => !t.name.startsWith(KNOWLEDGE_TOOL_PREFIX));
+            } else {
+              knowledge = await injected(); // tool mode me [] — AI khud search_knowledge call karega
+              boxToolHint = toolHint;
+              boxFallback = knowledgeFallback;
+            }
+            if (enableMcp && activeTools.length) {
+              mcpToolsDesc = `\n\nConnected MCP Server Tools and capabilities:\n${activeTools.map((t) => `- ${t.name}: ${t.description}`).join("\n")}`;
             }
           } else {
             // Mode 1: Prompt Only — no knowledge base, no MCP tools
             knowledge = [];
             activeTools = [];
-            mcpToolsDesc = "";
           }
 
           const known = Object.entries(vars).filter(([k, v]) => v && k !== "lastMessage");
@@ -149,19 +181,24 @@ export async function handleMessage(sessionId: string, text: string, channel = "
             mcpToolsDesc;
 
           const fullPrompt = isKnowledgeMcp
-            ? promptWith(knowledge) + extra
+            ? `${settings.systemPrompt}\n\n${nowLine()}${knowledgeBlock(knowledge)}${boxToolHint}${extra}`
             : `${instruction || settings.systemPrompt}\n\n${nowLine()}${extra}`;
 
           // If this AI node has its own API key configured, use it directly!
           const nodeApiKey = typeof nodeData?.aiApiKey === "string" ? nodeData.aiApiKey.trim() : "";
           if (nodeApiKey) {
+            // Box ki apni key wala AI MCP tools nahi chalata — isliye "knowledge_mcp" me files ka data backend khud bhejta hai
+            const nodeKnowledge = isKnowledgeMcp ? await getKnowledge(selectedDocId !== "all" ? selectedDocId : undefined) : [];
+            const nodePrompt = isKnowledgeMcp
+              ? `${settings.systemPrompt}\n\n${nowLine()}${knowledgeBlock(nodeKnowledge)}${extra}`
+              : fullPrompt;
             try {
               const r = await executeNodeAi({
                 provider: typeof nodeData?.aiProvider === "string" ? nodeData.aiProvider : "gemini",
                 apiKey: nodeApiKey,
                 model: typeof nodeData?.aiModel === "string" ? nodeData.aiModel : undefined,
                 baseUrl: typeof nodeData?.aiBaseUrl === "string" ? nodeData.aiBaseUrl : undefined,
-                systemPrompt: fullPrompt,
+                systemPrompt: nodePrompt,
                 history,
               });
               if (r.trim()) return r;
@@ -178,7 +215,8 @@ export async function handleMessage(sessionId: string, text: string, channel = "
           }
 
           if (provider.name === "demo") {
-            const top = knowledge[0];
+            // Demo me LLM nahi — uploaded files se seedha jawab, warna team ko bata do
+            const top = (isKnowledgeMcp && !knowledge.length ? await getKnowledge(selectedDocId !== "all" ? selectedDocId : undefined) : knowledge)[0];
             return top ? (top.text.length > 700 ? `${top.text.slice(0, 700).replace(/\s+\S*$/, "")}…` : top.text) : (instruction || "Is sawaal ka jawab hamari team degi — wo jaldi aapse contact karenge.");
           }
           try {
@@ -189,6 +227,7 @@ export async function handleMessage(sessionId: string, text: string, channel = "
               runTool,
               state: {},
               knowledge,
+              knowledgeFallback: boxFallback,
             });
             if (r.trim()) return r;
           } catch (err) {
@@ -205,8 +244,8 @@ export async function handleMessage(sessionId: string, text: string, channel = "
       toolLog.push({ name: "flow", input: { flow: flow.name }, output: result.trace.join(" → "), isError: false, at: new Date() });
     } else {
       /* ── Sirf AI (ya Demo mode) ── */
-      const knowledge = await getKnowledge();
-      reply = await provider.reply({ history, settings: { ...baseSettings, systemPrompt: promptWith(knowledge) }, tools, runTool, state, knowledge });
+      const knowledge = await injected();
+      reply = await provider.reply({ history, settings: { ...baseSettings, systemPrompt: promptWith(knowledge) }, tools, runTool, state, knowledge, knowledgeFallback });
     }
   } catch (err) {
     console.error(`[chat] ${provider.name} error:`, err);
@@ -229,6 +268,7 @@ export async function handleMessage(sessionId: string, text: string, channel = "
     reply,
     quickReplies,
     provider: flow ? `flow` : provider.name,
+    knowledgeMode,
     toolLog: toolLog.map(({ at: _at, ...t }) => t),
     recipientId,
     variables: flowVars,

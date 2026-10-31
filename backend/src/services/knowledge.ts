@@ -1,5 +1,6 @@
+import fs from "node:fs";
 import path from "node:path";
-import { KnowledgeChunk, KnowledgeDoc } from "../models/index.js";
+import { KnowledgeChunk, KnowledgeDoc, Settings, getSettings } from "../models/index.js";
 
 /*  Knowledge base = "sirf zaroorat jitna data LLM ko"
     1. File upload → text nikalo (md / txt / pdf / docx)
@@ -132,8 +133,17 @@ const STOP = new Set(
     "can could will would should shall may might what which who whom how when where why there here please tell about any some more most also just than then so if " +
     "hai hain ho hoga hogi tha thi the ka ki ke ko me mein se par pe aur ya bhi kya kaise kab kahan kaun kitna kitne kitni kyu kyun koi kuch ye yeh wo woh is us " +
     "mujhe mera meri mere hum hamara humara aap aapka aapki aapke apna apni batao bataiye bataye batayein chahiye chaiye hota hoti karna karni karte kar raha rahi " +
-    "ji haan nahi nhi ok okay hello hi namaste sir madam"
+    "ji haan nahi nhi ok okay hello hi namaste sir madam do de dijiye dena milega milegi sakta sakte sakti number"
   ).split(/\s+/)
+);
+
+/* Ek hi matlab ke alag shabd → ek shabd. Customer "rate" / "kimat" bolta hai, file me "pricing" likha hota hai. */
+const SAME = new Map<string, string>(
+  Object.entries({
+    price: "price pricing rate cost charge fee fees kimat keemat daam",
+    timing: "timing time hour schedule samay",
+    refund: "refund return",
+  }).flatMap(([key, words]) => words.split(" ").map((w) => [w, key] as [string, string]))
 );
 
 export function tokenize(s: string): string[] {
@@ -142,11 +152,12 @@ export function tokenize(s: string): string[] {
     .replace(/[^a-z0-9ऀ-ॿ₹]+/g, " ")
     .split(" ")
     .filter((w) => w.length > 1 && !STOP.has(w))
-    .map((w) => (w.length > 4 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w)); // services → service
+    .map((w) => (w.length > 4 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w)) // services → service
+    .map((w) => SAME.get(w) ?? w);
 }
 
 type IndexedChunk = { docId: string; docName: string; title: string; text: string; tf: Map<string, number>; len: number };
-let index: { chunks: IndexedChunk[]; df: Map<string, number>; avgLen: number } | null = null;
+let index: { chunks: IndexedChunk[]; df: Map<string, number>; avgLen: number; sig: string } | null = null;
 
 /** Upload / delete / on-off ke baad cache hata do — agla search naya index banayega */
 export function invalidateIndex() {
@@ -154,22 +165,28 @@ export function invalidateIndex() {
 }
 
 async function getIndex() {
-  if (index) return index;
-  const enabledDocs = await KnowledgeDoc.find({ enabled: true }).select("_id").lean();
+  // Knowledge MCP server alag process me chalta hai — use backend ka invalidateIndex() pata nahi chalta.
+  // Isliye har search par ek chhota check: enabled files ki list / updatedAt badli to index dobara banao.
+  const enabledDocs = await KnowledgeDoc.find({ enabled: true }).select("_id updatedAt").lean();
+  const sig = enabledDocs.map((d) => `${d._id}:${d.updatedAt ? new Date(d.updatedAt).getTime() : 0}`).sort().join(",");
+  if (index && index.sig === sig) return index;
   const rows = enabledDocs.length
     ? await KnowledgeChunk.find({ docId: { $in: enabledDocs.map((d) => d._id) } }).select("docId docName title text").lean()
     : [];
   const df = new Map<string, number>();
   const chunks: IndexedChunk[] = rows.map((r: any) => {
-    // title 2 baar — heading me aaya shabd zyada important
-    const tokens = tokenize(`${r.title ?? ""} ${r.title ?? ""} ${r.text ?? ""}`);
+    // Sirf apni heading (aakhri hissa) 2 baar — wo shabd zyada important.
+    // File ka main title ("Company — WhatsApp, SMS & RCS") har tukde me hota hai; use score me jodne se
+    // "whatsapp" jaisa shabd har jagah dikhta aur bekaar ho jaata — isliye wo nahi jodte.
+    const own = (r.title ?? "").split(" › ").pop() ?? "";
+    const tokens = tokenize(`${own} ${own} ${r.text ?? ""}`);
     const tf = new Map<string, number>();
     for (const t of tokens) tf.set(t, (tf.get(t) ?? 0) + 1);
     for (const t of tf.keys()) df.set(t, (df.get(t) ?? 0) + 1);
     return { docId: String(r.docId || ""), docName: r.docName ?? "", title: r.title ?? "", text: r.text ?? "", tf, len: tokens.length };
   });
   const avgLen = chunks.reduce((n, c) => n + c.len, 0) / Math.max(1, chunks.length);
-  return (index = { chunks, df, avgLen });
+  return (index = { chunks, df, avgLen, sig });
 }
 
 export async function searchKnowledge(
@@ -252,6 +269,41 @@ export function knowledgeBlock(hits: KnowledgeHit[]) {
   );
 }
 
+/* ───────── "AI khud maange" mode ─────────
+   Backend data nahi bhejta — sirf batata hai ki kaunsi files hain aur tool kaise use karna hai.
+   Data Knowledge MCP server (src/mcp-servers/knowledge.ts) se aata hai, jab LLM tool call kare. */
+export type KnowledgeMode = "tool" | "inject" | "off";
+
+export const KNOWLEDGE_TOOL_PREFIX = "knowledge__";
+
+/** Setting + provider + kya knowledge server connected hai → is message ke liye final mode */
+export function resolveKnowledgeMode(
+  setting: string | undefined | null,
+  providerName: string,
+  opts: { enabled: boolean; toolAvailable: boolean }
+): KnowledgeMode {
+  if (!opts.enabled) return "off";
+  if (!opts.toolAvailable) return "inject"; // knowledge server band / disconnected → purana tarika
+  if (setting === "inject") return "inject";
+  if (setting === "tool") return providerName === "demo" ? "inject" : "tool"; // Demo me LLM hi nahi
+  // auto: tool calling achhi tarah karne wale providers → tool; baaki → inject
+  return providerName === "claude" || providerName === "openai" ? "tool" : "inject";
+}
+
+export async function knowledgeToolPrompt() {
+  const docs = await KnowledgeDoc.find({ enabled: true }).select("name").lean();
+  if (!docs.length) return "";
+  return (
+    "\n\nCompany knowledge: the company's files are NOT included in this prompt. " +
+    `Before answering any question about the company, its services, prices, timings, policies or other facts, call the ${KNOWLEDGE_TOOL_PREFIX}search_knowledge tool with a short keyword query ` +
+    "(call it again with different keywords if the first result does not answer, or once per item when comparing). " +
+    `If a result is cut short, use ${KNOWLEDGE_TOOL_PREFIX}read_document. ` +
+    "Answer only from what the tools return; if they have nothing, say the team will confirm. " +
+    "Do not call these tools for greetings or small talk. Do not mention tools or file names to the customer.\n" +
+    `Files available: ${docs.map((d) => d.name).join(", ")}`
+  );
+}
+
 /* ───────────────────────── Save a file ───────────────────────── */
 
 export async function addDocument(name: string, buf: Buffer) {
@@ -270,4 +322,28 @@ export async function addDocument(name: string, buf: Buffer) {
   await KnowledgeChunk.insertMany(chunks.map((c, i) => ({ docId: doc._id, docName: name, title: c.title, text: c.text, order: i })));
   invalidateIndex();
   return doc;
+}
+
+/* ───────── Project ke saath aane wali files (knowledge-files/) ─────────
+   Pehli baar backend chalne par ye apne aap Knowledge base me aa jaati hain — bot turant company ke baare me bol sake.
+   Har file sirf EK BAAR: dashboard se delete karoge to wapas nahi aayegi. Badli hui file dashboard se dobara upload karo. */
+const SEED_DIR = path.resolve("../knowledge-files");
+
+export async function seedKnowledgeFiles() {
+  if (!fs.existsSync(SEED_DIR)) return;
+  const s = await getSettings();
+  const done = new Set(s.seededKnowledge ?? []);
+  for (const name of fs.readdirSync(SEED_DIR).sort()) {
+    if (done.has(name) || !fileTypeOf(name)) continue;
+    try {
+      if (!(await KnowledgeDoc.exists({ name }))) {
+        const doc = await addDocument(name, fs.readFileSync(path.join(SEED_DIR, name)));
+        console.log(`[knowledge] added "${name}" (${doc.chunkCount} parts)`);
+      }
+      done.add(name);
+    } catch (err) {
+      console.error(`[knowledge] could not add "${name}":`, err instanceof Error ? err.message : err);
+    }
+  }
+  await Settings.updateOne({ _id: "global" }, { seededKnowledge: [...done] });
 }

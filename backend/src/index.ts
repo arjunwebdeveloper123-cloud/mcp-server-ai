@@ -7,6 +7,7 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import mongoose from "mongoose";
 import { connectAll, closeAll, seedDefaultServer } from "./mcp/manager.js";
+import { seedKnowledgeFiles } from "./services/knowledge.js";
 import { mcpRouter } from "./routes/mcp.js";
 import { webhooksRouter, incomingRouter, receiverRouter } from "./routes/webhooks.js";
 import { publicRouter, settingsRouter, statsRouter } from "./routes/core.js";
@@ -88,13 +89,14 @@ async function main() {
   console.log("[backend] MongoDB connected");
 
   await seedDefaultServer();
+  await seedKnowledgeFiles(); // knowledge-files/*.md → Knowledge base (sirf pehli baar)
   await connectAll(); // DB me saved saare MCP servers connect
 
   app.listen(PORT, HOST, () => {
     console.log(`[backend] API      http://${HOST}:${PORT}`);
     console.log(`[backend] Embed    http://${HOST}:${PORT}/embed.js`);
     if (!process.env.ANTHROPIC_API_KEY)
-      console.log("[backend] No ANTHROPIC_API_KEY — bot runs in Demo mode (or pick Ollama in Bot settings)");
+      console.log("[backend] No ANTHROPIC_API_KEY — bot uses the Free API (OPENAI_COMPAT_API_KEY) or Demo mode");
   });
 }
 

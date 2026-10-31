@@ -3,7 +3,7 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { Conversation, Delivery, Flow, IncomingEvent, KnowledgeDoc, LeadRead, RECOMMENDED_PROMPT, Settings, Webhook, getSettings } from "../models/index.js";
 import { handleMessage } from "../services/chat.js";
 import { currentUser } from "../services/auth.js";
-import { checkOllama, ollamaTarget, openaiTarget, PROVIDER_SETTINGS, resolveProvider, testCompat } from "../services/providers/index.js";
+import { openaiTarget, PROVIDER_SETTINGS, resolveProvider, testCompat } from "../services/providers/index.js";
 import { listServers } from "../mcp/manager.js";
 import { asyncH, HttpError } from "../http.js";
 
@@ -64,7 +64,7 @@ publicRouter.post(
 export const settingsRouter = Router();
 
 /** Abhi kaunsa AI chal raha hai aur wo ready hai ya nahi */
-export async function aiStatus(s: { provider?: string | null; ollamaUrl: string; ollamaModel: string; openaiBaseUrl: string; openaiModel: string }) {
+export async function aiStatus(s: { provider?: string | null; openaiBaseUrl: string; openaiModel: string }) {
   const active = resolveProvider(s.provider);
   const apiKeyConfigured = Boolean(process.env.ANTHROPIC_API_KEY);
   if (active === "claude")
@@ -77,17 +77,6 @@ export async function aiStatus(s: { provider?: string | null; ollamaUrl: string;
       apiKeyConfigured,
       openaiKeyConfigured: hasKey,
       detail: hasKey ? `${s.openaiModel} via ${hostOf(s.openaiBaseUrl)}` : "OPENAI_COMPAT_API_KEY missing in backend/.env",
-    };
-  }
-  if (active === "ollama") {
-    const o = await checkOllama(s.ollamaUrl);
-    const hasModel = o.models.some((m) => m === s.ollamaModel || m.split(":")[0] === s.ollamaModel);
-    return {
-      active,
-      ready: o.running && hasModel,
-      apiKeyConfigured,
-      ollama: o,
-      detail: !o.running ? `Ollama not running at ${s.ollamaUrl}` : !hasModel ? `Model "${s.ollamaModel}" not downloaded` : "Ollama ready",
     };
   }
   return { active, ready: true, apiKeyConfigured, detail: "Demo mode — fixed flow, no AI" };
@@ -116,7 +105,7 @@ settingsRouter.get(
   })
 );
 
-const EDITABLE = ["botName", "provider", "ollamaUrl", "ollamaModel", "openaiBaseUrl", "openaiModel", "model", "maxTokens", "welcomeMessage", "systemPrompt", "quickReplies", "brandColor", "widgetPosition", "maxToolRounds"] as const;
+const EDITABLE = ["botName", "provider", "openaiBaseUrl", "openaiModel", "model", "maxTokens", "welcomeMessage", "systemPrompt", "quickReplies", "brandColor", "widgetPosition", "maxToolRounds"] as const;
 
 settingsRouter.put(
   "/",
@@ -127,8 +116,6 @@ settingsRouter.put(
     if ("provider" in patch && !(PROVIDER_SETTINGS as readonly string[]).includes(String(patch.provider))) throw new HttpError(400, "Unknown provider");
     if ("openaiBaseUrl" in patch && !/^https?:\/\/[^\s]+$/.test(String(patch.openaiBaseUrl))) throw new HttpError(400, "API base URL must start with https://");
     if ("openaiModel" in patch && !String(patch.openaiModel).trim()) throw new HttpError(400, "Model name is required");
-    if ("ollamaUrl" in patch && !/^https?:\/\/[^\s]+$/.test(String(patch.ollamaUrl))) throw new HttpError(400, "Ollama URL must start with http:// or https://");
-    if ("ollamaModel" in patch && !String(patch.ollamaModel).trim()) throw new HttpError(400, "Ollama model is required");
     if ("maxTokens" in patch) patch.maxTokens = Math.min(Math.max(Number(patch.maxTokens) || 1024, 256), 8192);
     if ("maxToolRounds" in patch) patch.maxToolRounds = Math.min(Math.max(Number(patch.maxToolRounds) || 5, 1), 10);
     if ("quickReplies" in patch) patch.quickReplies = (Array.isArray(patch.quickReplies) ? patch.quickReplies : []).map(String).filter(Boolean).slice(0, 6);
@@ -143,15 +130,11 @@ settingsRouter.put(
 settingsRouter.post(
   "/test-ai",
   asyncH(async (req, res) => {
-    const kind = req.body?.provider === "ollama" ? "ollama" : "openai";
     const s = await getSettings();
-    if (kind === "openai") {
-      if (!process.env.OPENAI_COMPAT_API_KEY) throw new HttpError(400, "Add OPENAI_COMPAT_API_KEY to backend/.env and restart the backend first");
-      const url = String(req.body?.openaiBaseUrl ?? s.openaiBaseUrl);
-      if (!/^https?:\/\//.test(url)) throw new HttpError(400, "API base URL must start with https://");
-      return res.json(await testCompat(openaiTarget(url, String(req.body?.openaiModel ?? s.openaiModel))));
-    }
-    res.json(await testCompat(ollamaTarget(String(req.body?.ollamaUrl ?? s.ollamaUrl), String(req.body?.ollamaModel ?? s.ollamaModel))));
+    if (!process.env.OPENAI_COMPAT_API_KEY) throw new HttpError(400, "Add OPENAI_COMPAT_API_KEY to backend/.env and restart the backend first");
+    const url = String(req.body?.openaiBaseUrl ?? s.openaiBaseUrl);
+    if (!/^https?:\/\//.test(url)) throw new HttpError(400, "API base URL must start with https://");
+    res.json(await testCompat(openaiTarget(url, String(req.body?.openaiModel ?? s.openaiModel))));
   })
 );
 

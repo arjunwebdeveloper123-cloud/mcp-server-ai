@@ -2,7 +2,7 @@ import type { Provider, ProviderContext } from "./types.js";
 
 /*  OpenAI-compatible "Chat Completions" format.
     Ye format bahut saari services samajhti hain:
-      Groq, Google Gemini, OpenRouter, Ollama, aur dusre OpenAI-jaise API providers.
+      Groq, Google Gemini, OpenRouter, apinex, aur dusre OpenAI-jaise API providers.
     Isliye ek hi code se sab chal jaate hain — sirf URL, model aur key badalti hai.   */
 
 type OAToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
@@ -16,7 +16,7 @@ type OAResponse = {
 };
 
 export type CompatTarget = {
-  label: string; // error messages me dikhane ke liye ("Ollama", "Free API")
+  label: string; // error messages me dikhane ke liye ("Free API")
   endpoint: string; // poora URL: .../chat/completions
   model: string;
   apiKey?: string;
@@ -59,13 +59,23 @@ export async function compatRequest(t: CompatTarget, body: Record<string, unknow
 const toolsUnsupported = new Set<string>(); // jo endpoint+model tools nahi samajhte, unhe yaad rakho
 
 /** Tool-use loop: model → tool_calls → MCP tools → results → model → ... → text */
-export async function compatReply(t: CompatTarget, { history, settings, tools, runTool }: ProviderContext) {
+export async function compatReply(t: CompatTarget, { history, settings, tools, runTool, knowledgeFallback }: ProviderContext) {
   const messages: OAMessage[] = [
     { role: "system", content: settings.systemPrompt },
     ...history.map((m) => ({ role: m.role, content: m.content }) as OAMessage),
   ];
   const key = `${t.endpoint}|${t.model}`;
   const oaTools = tools.map((x) => ({ type: "function" as const, function: { name: x.name, description: x.description, parameters: x.input_schema } }));
+
+  // Model tools nahi samajhta → Knowledge tool bhi nahi chalega, isliye file ka relevant hissa seedha prompt me jodo
+  let fallbackUsed = false;
+  const useKnowledgeFallback = async () => {
+    if (fallbackUsed || !knowledgeFallback) return;
+    fallbackUsed = true;
+    const extra = await knowledgeFallback();
+    if (extra) messages[0] = { role: "system", content: settings.systemPrompt + extra };
+  };
+  if (toolsUnsupported.has(key)) await useKnowledgeFallback();
 
   for (let round = 0; round <= settings.maxToolRounds; round++) {
     const sendTools = oaTools.length > 0 && !toolsUnsupported.has(key);
@@ -77,6 +87,7 @@ export async function compatReply(t: CompatTarget, { history, settings, tools, r
       if (sendTools && err instanceof CompatError && err.status === 400 && /tool|function/i.test(err.message)) {
         toolsUnsupported.add(key);
         console.warn(`[ai] ${t.label} model "${t.model}" does not support tools — continuing without MCP tools`);
+        await useKnowledgeFallback();
         round--;
         continue;
       }

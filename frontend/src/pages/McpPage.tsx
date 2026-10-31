@@ -287,11 +287,16 @@ function ServerBlock({
 const PRESETS = [
   {
     label: 'Built-in lead server',
-    data: { name: 'Lead server', slug: 'leads-2', transport: 'stdio', command: 'npx', args: 'tsx\n../mcp-server/src/index.ts' },
+    data: { name: 'Lead server', slug: 'leads-2', transport: 'stdio', command: 'npx', args: 'tsx\n./src/mcp-servers/leads/index.ts' },
   },
   {
     label: 'Appointment server',
-    data: { name: 'Appointment server', slug: 'appointments-2', transport: 'stdio', command: 'npx', args: 'tsx\n../appointment-server/src/index.ts' },
+    data: { name: 'Appointment server', slug: 'appointments-2', transport: 'stdio', command: 'npx', args: 'tsx\n./src/mcp-servers/appointments/index.ts' },
+  },
+  {
+    // slug "knowledge" hi rakhna — bot isi naam se files wala tool pehchanta hai
+    label: 'Knowledge server',
+    data: { name: 'Knowledge server', slug: 'knowledge', transport: 'stdio', command: 'npx', args: 'tsx\n./src/mcp-servers/knowledge/index.ts' },
   },
   {
     label: 'Filesystem (official)',

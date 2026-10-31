@@ -168,21 +168,18 @@ export type IncomingEvent = {
   createdAt: string
 }
 
-export type ProviderSetting = 'auto' | 'claude' | 'openai' | 'ollama' | 'demo'
-export type ProviderName = 'claude' | 'openai' | 'ollama' | 'demo'
+export type ProviderSetting = 'auto' | 'claude' | 'openai' | 'demo'
+export type ProviderName = 'claude' | 'openai' | 'demo'
 export type AiStatus = {
   active: ProviderName
   ready: boolean
   apiKeyConfigured: boolean
   detail: string
-  ollama?: { running: boolean; models: string[] }
 }
 
 export type Settings = {
   botName: string
   provider: ProviderSetting
-  ollamaUrl: string
-  ollamaModel: string
   openaiBaseUrl: string
   openaiModel: string
   openaiKeyConfigured?: boolean
@@ -268,8 +265,11 @@ export type KnowledgeDoc = {
   enabled: boolean
   createdAt: string
 }
+export type KnowledgeMode = 'auto' | 'tool' | 'inject'
+export type KnowledgeAccess = { active: 'tool' | 'inject' | 'off'; provider: string; toolAvailable: boolean }
 export type KnowledgeOverview = {
-  settings: { enabled: boolean; topK: number; maxChars: number }
+  settings: { enabled: boolean; topK: number; maxChars: number; mode: KnowledgeMode }
+  access: KnowledgeAccess
   docs: KnowledgeDoc[]
   totals: { docs: number; chunks: number }
 }
@@ -299,6 +299,8 @@ export type Lead = {
   name: string
   phone: string
   email?: string
+  company?: string
+  volume?: string
   service: string
   message?: string
   status: 'new' | 'contacted' | 'converted'
