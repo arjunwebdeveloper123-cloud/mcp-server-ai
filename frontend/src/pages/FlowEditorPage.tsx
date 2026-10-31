@@ -19,7 +19,7 @@ import {
   type NodeChange,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { AlertTriangle, ArrowLeft, FlaskConical, Save, UploadCloud, X } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, FlaskConical, Phone, Rocket, Save, UploadCloud, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/dialog'
@@ -30,6 +30,7 @@ import { BOXES, outputs, uid, type BoxData, type BoxType } from '@/flow/boxes'
 import { BoxNode } from '@/flow/BoxNode'
 import { Inspector } from '@/flow/Inspector'
 import { TestPanel } from '@/flow/TestPanel'
+import { DeployBotModal } from '@/flow/DeployBotModal'
 
 // Har box type ke liye ek hi component (BoxNode) — module level par, warna React Flow har render par warning deta hai
 const nodeTypes = Object.fromEntries(Object.keys(BOXES).map((k) => [k, BoxNode]))
@@ -58,6 +59,13 @@ function Editor() {
   const [panel, setPanel] = useState<'inspect' | 'test' | null>(null)
   const [check, setCheck] = useState<FlowCheck | null>(null)
   const [leaving, setLeaving] = useState(false)
+  const [deployOpen, setDeployOpen] = useState(false)
+  const [isDeploying, setIsDeploying] = useState(false)
+
+  const webhookNode = useMemo(() => nodes.find((n) => n.type === 'webhook'), [nodes])
+  const currentPhoneId = (webhookNode?.data as any)?.whatsappPhoneId || flow.data?.whatsappPhoneId || ''
+  const currentApiKey = (webhookNode?.data as any)?.whatsappApiKey || flow.data?.whatsappApiKey || ''
+  const currentBaseUrl = (webhookNode?.data as any)?.whatsappBaseUrl || flow.data?.whatsappBaseUrl || 'https://partnersv1.pinbot.ai/v3'
 
   /* Flow load → canvas */
   useEffect(() => {
@@ -161,9 +169,24 @@ function Editor() {
   const variables = useMemo(() => {
     const v = new Set<string>()
     for (const n of nodes) {
-      const d = n.data as BoxData
+      const d = (n.data || {}) as BoxData
       if ((n.type === 'question' || n.type === 'buttons') && d.variable) v.add(d.variable)
       if (n.type === 'tool') v.add(d.resultVar || 'toolResult')
+      if (n.type === 'api') {
+        v.add(d.resultVar || 'apiResponse')
+        v.add(d.statusVar || 'apiStatus')
+      }
+      if (n.type === 'webhook') {
+        v.add(d.resultVar || 'webhookPayload')
+      }
+      if (n.type === 'json') {
+        v.add(d.resultVar || 'jsonData')
+        if (Array.isArray(d.mappings)) {
+          for (const m of d.mappings) {
+            if (m?.varName) v.add(m.varName)
+          }
+        }
+      }
     }
     return [...v]
   }, [nodes])
@@ -183,19 +206,65 @@ function Editor() {
     },
     onError: (e) => toast.error(e.message),
   })
-  const publish = useMutation({
-    mutationFn: async () => {
-      const r = await save.mutateAsync()
-      if (r.errors.length) throw new Error('Fix the problems shown on the canvas, then publish.')
-      return api.post(`/api/admin/flows/${id}/publish`)
-    },
-    onSuccess: () => {
-      toast.success('Published — the website bot now follows this flow')
+  const handleDeploy = async (creds: { phoneId: string; apiKey: string; baseUrl: string }) => {
+    setIsDeploying(true)
+    try {
+      if (webhookNode) {
+        updateData(webhookNode.id, {
+          whatsappPhoneId: creds.phoneId,
+          whatsappApiKey: creds.apiKey,
+          whatsappBaseUrl: creds.baseUrl,
+        })
+      }
+
+      const updatedNodes = nodes.map((n) => {
+        if (n.type === 'webhook') {
+          return {
+            ...n,
+            data: {
+              ...(n.data || {}),
+              whatsappPhoneId: creds.phoneId,
+              whatsappApiKey: creds.apiKey,
+              whatsappBaseUrl: creds.baseUrl,
+            },
+          }
+        }
+        return n
+      })
+
+      const saveRes = await api.put<FlowCheck & { ok: boolean }>(`/api/admin/flows/${id}`, {
+        name,
+        nodes: updatedNodes.map(({ id, type, position, data }) => ({ id, type, position, data })),
+        edges: edges.map(({ id, source, target, sourceHandle }) => ({ id, source, target, sourceHandle: sourceHandle ?? null })),
+        whatsappPhoneId: creds.phoneId,
+        whatsappApiKey: creds.apiKey,
+        whatsappBaseUrl: creds.baseUrl,
+      })
+
+      setDirty(false)
+      if (saveRes.errors.length) {
+        setCheck(saveRes)
+        toast.error('Fix flow errors before deploying.')
+        return
+      }
+
+      await api.post(`/api/admin/flows/${id}/publish`, {
+        whatsappPhoneId: creds.phoneId,
+        whatsappApiKey: creds.apiKey,
+        whatsappBaseUrl: creds.baseUrl,
+      })
+
+      toast.success('Bot successfully deployed! WhatsApp incoming messages will now trigger this flow.')
+      setDeployOpen(false)
       qc.invalidateQueries({ queryKey: ['flow', id] })
+      qc.invalidateQueries({ queryKey: ['flows'] })
       qc.invalidateQueries({ queryKey: ['stats'] })
-    },
-    onError: (e) => toast.error(e.message),
-  })
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to deploy bot')
+    } finally {
+      setIsDeploying(false)
+    }
+  }
   const unpublish = useMutation({
     mutationFn: () => api.post('/api/admin/flows/unpublish'),
     onSuccess: () => {
@@ -273,8 +342,16 @@ function Editor() {
           </Button>
           {isActive ? (
             <>
+              <Button
+                variant="secondary"
+                size="sm"
+                className="gap-1.5"
+                onClick={() => setDeployOpen(true)}
+              >
+                <Phone className="size-3.5 text-live" /> WhatsApp Settings
+              </Button>
               {dirty ? (
-                <Button size="sm" onClick={() => publish.mutate()} disabled={publish.isPending}>
+                <Button size="sm" onClick={() => setDeployOpen(true)}>
                   <UploadCloud /> Publish changes
                 </Button>
               ) : null}
@@ -283,8 +360,12 @@ function Editor() {
               </Button>
             </>
           ) : (
-            <Button size="sm" onClick={() => publish.mutate()} disabled={publish.isPending}>
-              {publish.isPending ? <Spinner className="size-3.5" /> : <UploadCloud />} Publish
+            <Button
+              size="sm"
+              className="gap-1.5 bg-live hover:bg-live/90 text-white font-medium shadow-sm"
+              onClick={() => setDeployOpen(true)}
+            >
+              <Rocket className="size-3.5" /> Deploy Bot
             </Button>
           )}
         </div>
@@ -382,6 +463,7 @@ function Editor() {
           <div className="w-80 sm:w-96 shrink-0">
             <Inspector
               key={selected.id}
+              flowId={id}
               node={{ id: selected.id, type: selected.type as BoxType, data: selected.data as BoxData }}
               variables={variables}
               onChange={(p) => updateData(selected.id, p)}
@@ -391,6 +473,7 @@ function Editor() {
                 setSelectedId(null)
               }}
               onOptionRemoved={(optId) => setEdges((es) => es.filter((e) => !(e.source === selected.id && e.sourceHandle === optId)))}
+              onOpenDeploy={() => setDeployOpen(true)}
             />
           </div>
         ) : panel === 'test' ? (
@@ -399,6 +482,20 @@ function Editor() {
           </div>
         ) : null}
       </div>
+
+      <DeployBotModal
+        open={deployOpen}
+        onOpenChange={setDeployOpen}
+        flowId={id}
+        flowName={name}
+        initialPhoneId={currentPhoneId}
+        initialApiKey={currentApiKey}
+        initialBaseUrl={currentBaseUrl}
+        webhookNodeId={webhookNode?.id}
+        onDeploy={handleDeploy}
+        isDeploying={isDeploying}
+        isActive={isActive}
+      />
 
       <ConfirmDialog
         open={leaving}

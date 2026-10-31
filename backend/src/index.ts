@@ -13,7 +13,7 @@ import { publicRouter, settingsRouter, statsRouter } from "./routes/core.js";
 import { errorHandler } from "./http.js";
 import { authRouter } from "./routes/auth.js";
 import { knowledgeRouter } from "./routes/knowledge.js";
-import { flowsRouter } from "./routes/flows.js";
+import { flowsRouter, flowWebhookReceiverRouter } from "./routes/flows.js";
 import { dataRouter } from "./routes/data.js";
 import { requireAuth } from "./services/auth.js";
 
@@ -38,6 +38,29 @@ app.get("/embed.js", publicCors, (_req, res) => {
 });
 app.use("/api", publicCors, publicRouter); // /api/chat, /api/widget/config
 app.use("/hooks/in", publicCors, receiverRouter); // incoming webhooks
+app.use("/hooks/flow", publicCors, flowWebhookReceiverRouter); // incoming CRM flow webhooks
+
+// Root and Webhook info endpoints for ngrok connectivity confirmation
+app.get("/", publicCors, (_req, res) => {
+  res.json({
+    ok: true,
+    service: "Chatbot and Flow Engine API",
+    status: "online",
+    tunnelReady: true,
+    flowWebhookEndpoint: "/hooks/flow/:flowId/:nodeId",
+    message: "Backend is connected with ngrok! To trigger a flow from your CRM, copy the predefined webhook URL from Flow Builder.",
+  });
+});
+
+app.all(["/webhook", "/webhooks"], publicCors, (req, res) => {
+  res.json({
+    ok: true,
+    status: "ready",
+    message: "Webhook receiver is active. For flow triggers, please use: /hooks/flow/:flowId/:nodeId",
+    hint: "Open your Flow in Flow Builder, click your Webhook box, and copy the Predefined Webhook URL.",
+    receivedMethod: req.method,
+  });
+});
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, db: mongoose.connection.readyState === 1 });
 });

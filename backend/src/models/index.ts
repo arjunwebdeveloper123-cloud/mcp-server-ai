@@ -226,6 +226,10 @@ const flowSchema = new Schema(
     name: { type: String, required: true },
     nodes: { type: Schema.Types.Mixed, default: [] }, // React Flow nodes: { id, type, position, data }
     edges: { type: Schema.Types.Mixed, default: [] }, // React Flow edges: { id, source, target, sourceHandle }
+    whatsappPhoneId: { type: String, default: "" },
+    whatsappApiKey: { type: String, default: "" },
+    whatsappProvider: { type: String, default: "cloudgateway" },
+    whatsappBaseUrl: { type: String, default: "https://partnersv1.pinbot.ai/v3" },
   },
   { timestamps: true, minimize: false }
 );

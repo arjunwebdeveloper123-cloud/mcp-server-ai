@@ -16,10 +16,17 @@ const handleCls = '!size-3 !border-2 !border-panel !bg-line-strong hover:!bg-sig
 /** Canvas par ek box. Upar: aane wala arrow. Neeche / side: jaane wale arrows. */
 export const BoxNode = memo(function BoxNode({ type, data, selected }: NodeProps) {
   const t = type as BoxType
-  const d = data as BoxData
-  const meta = BOXES[t]
-  const tone = TONE[meta.tone]
-  const Icon = meta.icon
+  const d = (data || {}) as BoxData
+  const meta = BOXES[t] || {
+    title: String(type || 'Node'),
+    description: '',
+    icon: BOXES.message.icon,
+    tone: 'ink' as const,
+    defaults: () => ({}),
+    inPalette: false,
+  }
+  const tone = TONE[meta.tone] || TONE.ink
+  const Icon = meta.icon || BOXES.message.icon
   const outs = outputs(t, d)
   const multi = outs.length > 1 || (outs.length === 1 && outs[0].id !== null)
 
@@ -72,6 +79,23 @@ export const BoxNode = memo(function BoxNode({ type, data, selected }: NodeProps
               {(d.method as string) || 'GET'}
             </span>
           ) : null}
+          {t === 'webhook' ? (
+            <div className="ml-auto flex items-center gap-1">
+              {d.whatsappApiKey && d.whatsappPhoneId ? (
+                <span className="inline-flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[9.5px] font-semibold text-emerald-600 dark:text-emerald-400">
+                  <span className="size-1 rounded-full bg-emerald-500" /> WhatsApp
+                </span>
+              ) : null}
+              <span className="rounded bg-purple-500/15 px-1.5 py-0.5 font-mono text-[9.5px] font-bold uppercase text-purple-600 dark:text-purple-400">
+                {d.webhookType === 'outgoing' ? 'POST OUT' : 'CRM IN'}
+              </span>
+            </div>
+          ) : null}
+          {t === 'json' ? (
+            <span className="ml-auto rounded bg-signal/15 px-1.5 py-0.5 font-mono text-[9.5px] font-bold uppercase text-signal">
+              JSON
+            </span>
+          ) : null}
         </div>
         <p className="mt-0.5 truncate text-[13.5px] font-semibold text-ink">{d.label || meta.title}</p>
         {summary(t, d) ? <p className="mt-1 line-clamp-2 text-[12px] leading-snug text-muted">{summary(t, d)}</p> : null}
@@ -88,10 +112,8 @@ export const BoxNode = memo(function BoxNode({ type, data, selected }: NodeProps
         </ul>
       ) : null}
 
-      {/* Output wire: Bottom handle for single wire or fallback */}
+      {/* Output wire: Bottom handle for single wire output */}
       {!multi && outs.length === 1 ? (
-        <Handle type="source" position={Position.Bottom} className={handleCls} />
-      ) : multi && t === 'api' ? (
         <Handle type="source" position={Position.Bottom} className={handleCls} />
       ) : null}
     </div>

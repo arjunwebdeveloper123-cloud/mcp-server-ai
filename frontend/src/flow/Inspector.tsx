@@ -8,14 +8,23 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  FileCode,
   GitBranch,
   Globe,
+  Key,
   KeyRound,
+  MessageSquare,
+  Phone,
   Plus,
+  Radio,
+  RefreshCw,
+  Rocket,
   Send,
   Sparkles,
+  Terminal,
   Trash2,
   Wand2,
+  Webhook,
   X,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -41,15 +50,24 @@ import { cn } from '@/lib/utils'
 type Props = {
   node: { id: string; type: BoxType; data: BoxData }
   variables: string[]
+  flowId?: string
   onChange: (patch: Partial<BoxData>) => void
   onDelete: () => void
   onClose: () => void
   onOptionRemoved: (optionId: string) => void
+  onOpenDeploy?: () => void
 }
 
-export function Inspector({ node, variables, onChange, onDelete, onClose, onOptionRemoved }: Props) {
-  const meta = BOXES[node.type]
-  const d = node.data
+export function Inspector({ node, variables, flowId, onChange, onDelete, onClose, onOptionRemoved, onOpenDeploy }: Props) {
+  const meta = BOXES[node.type] || {
+    title: String(node.type || 'Settings'),
+    description: '',
+    icon: BOXES.message.icon,
+    tone: 'ink' as const,
+    defaults: () => ({}),
+    inPalette: false,
+  }
+  const d = (node.data || {}) as BoxData
   const id = (k: string) => `insp-${node.id}-${k}`
   const varHint = variables.length ? `You can use ${variables.map((v) => `{{${v}}}`).join(' ')}` : 'Answers saved by Question boxes can be used as {{name}}'
 
@@ -159,12 +177,12 @@ export function Inspector({ node, variables, onChange, onDelete, onClose, onOpti
 
         {/* ── Webhook ── */}
         {node.type === 'webhook' ? (
-          <>
-            <Field label="URL" htmlFor={id('url')} hint="All saved answers are POSTed as JSON: { variables: { name, phone, … } }">
-              <Input id={id('url')} value={d.url ?? ''} onChange={(e) => onChange({ url: e.target.value })} className="font-mono" />
-            </Field>
-            <p className="text-[12.5px] text-muted">The response status is saved as {'{{webhookStatus}}'}.</p>
-          </>
+          <WebhookFields d={d} id={id} flowId={flowId} nodeId={node.id} onChange={onChange} onOpenDeploy={onOpenDeploy} />
+        ) : null}
+
+        {/* ── JSON Parse ── */}
+        {node.type === 'json' ? (
+          <JsonFields d={d} id={id} variables={variables} onChange={onChange} />
         ) : null}
       </div>
 
@@ -604,6 +622,31 @@ function AiFields({
             </Field>
           </>
         ) : null}
+        {/* Recipient Targeting info */}
+        <div className="rounded-lg border border-line bg-paper/50 p-2.5">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[12px] font-semibold text-ink flex items-center gap-1.5">
+              <Send className="size-3 text-signal" />
+              Target Recipient
+            </span>
+            {variables.includes('recipientId') ? (
+              <Badge tone="live">{'{{recipientId}} linked'}</Badge>
+            ) : (
+              <Badge tone="neutral">Current chat</Badge>
+            )}
+          </div>
+          <p className="text-[11.5px] text-muted leading-relaxed">
+            {variables.includes('recipientId') ? (
+              <>
+                The AI reply will be delivered to recipient <strong className="font-mono text-signal">{'{{recipientId}}'}</strong> (extracted from your CRM Webhook / JSON node).
+              </>
+            ) : (
+              <>
+                When connected after a CRM Webhook & JSON node, the AI output message is automatically delivered to the target recipient ID (<code className="text-ink font-mono">{'{{recipientId}}'}</code>).
+              </>
+            )}
+          </p>
+        </div>
       </section>
     </div>
   )
@@ -1168,6 +1211,811 @@ function ApiFields({
             </div>
           </div>
         ) : null}
+      </div>
+    </>
+  )
+}
+
+const WHATSAPP_SAMPLE = {
+  object: 'whatsapp_business_account',
+  entry: [
+    {
+      id: '123456789',
+      changes: [
+        {
+          value: {
+            messaging_product: 'whatsapp',
+            metadata: { display_phone_number: '15551234567', phone_number_id: '100200300400' },
+            contacts: [{ profile: { name: 'Pooja Verma' }, wa_id: '919876543210' }],
+            messages: [
+              {
+                from: '919876543210',
+                id: 'wamid.HBgL...',
+                text: { body: 'Hello, what services does CloudGateway provide?' },
+                type: 'text',
+              },
+            ],
+          },
+          field: 'messages',
+        },
+      ],
+    },
+  ],
+}
+
+const CRM_SAMPLE = {
+  recipientId: '+919876543210',
+  name: 'Rahul Sharma',
+  email: 'rahul@example.com',
+  message: 'I want to inquire about pricing and services for my business.',
+}
+
+/**
+ * Webhook Node Inspector:
+ * - Predefined CRM Webhook URL with live ngrok tunnel support for localhost testing
+ * - Auto-detects running ngrok tunnel via local client API (:4040) or backend .env
+ * - 1-Click Copy for ngrok webhook URL and terminal start command (`npx ngrok http 5000`)
+ * - Live ping connectivity tester for the public tunnel
+ * - Stores incoming CRM payload in flow variable (e.g. {{webhookPayload}})
+ * - Live CRM request simulator/tester
+ * - Optional toggle to outgoing webhook (POST to URL)
+ */
+function WebhookFields({
+  d,
+  id,
+  flowId,
+  nodeId,
+  onChange,
+  onOpenDeploy,
+}: {
+  d: BoxData
+  id: (k: string) => string
+  flowId?: string
+  nodeId: string
+  onChange: (p: Partial<BoxData>) => void
+  onOpenDeploy?: () => void
+}) {
+  const [copied, setCopied] = useState(false)
+  const [copiedCmd, setCopiedCmd] = useState(false)
+  const [isSimulating, setIsSimulating] = useState(false)
+  const [isTestingPing, setIsTestingPing] = useState(false)
+  const [simResult, setSimResult] = useState<{ status: number; data?: any; error?: string } | null>(null)
+  const [pingResult, setPingResult] = useState<{ ok: boolean; status: number; latencyMs: number; error?: string } | null>(null)
+  const [showApiKey, setShowApiKey] = useState(false)
+  const [testWaPhone, setTestWaPhone] = useState('918076271987')
+  const [isTestingWa, setIsTestingWa] = useState(false)
+  const [waTestResult, setWaTestResult] = useState<{ ok: boolean; status?: number; error?: string } | null>(null)
+  const [samplePayload, setSamplePayload] = useState(
+    JSON.stringify(
+      {
+        recipientId: '+919876543210',
+        name: 'Rahul Sharma',
+        email: 'rahul@example.com',
+        message: 'I want to inquire about pricing and services for my business.',
+      },
+      null,
+      2
+    )
+  )
+
+  // Query backend for active ngrok tunnel (auto-detects port 4040 or env var)
+  const { data: tunnelInfo, isFetching: isCheckingTunnel, refetch: checkTunnel } = useQuery({
+    queryKey: ['flow-ngrok-tunnel-status'],
+    queryFn: () =>
+      api.get<{
+        ok: boolean
+        active: boolean
+        publicUrl: string | null
+        source: string
+        port: number
+      }>('/api/admin/flows/ngrok-tunnel/status'),
+    refetchInterval: 12_000,
+  })
+
+  const mode = d.webhookType || 'incoming'
+  const isLocalhost =
+    typeof window !== 'undefined' &&
+    (window.location.hostname === 'localhost' ||
+      window.location.hostname === '127.0.0.1' ||
+      window.location.hostname.endsWith('.local'))
+
+  // Effective ngrok / public URL
+  const activeNgrokUrl = (d.ngrokUrl || tunnelInfo?.publicUrl || '').trim().replace(/\/+$/, '')
+  const useNgrok = d.useNgrok !== undefined ? Boolean(d.useNgrok) : Boolean(activeNgrokUrl || isLocalhost)
+
+  // Webhook URL: use ngrok if enabled & available, else local origin
+  const effectiveBaseUrl = useNgrok && activeNgrokUrl ? activeNgrokUrl : window.location.origin
+  const webhookUrl = `${effectiveBaseUrl}/hooks/flow/${flowId || 'active'}/${nodeId}`
+
+  const copyUrl = () => {
+    navigator.clipboard.writeText(webhookUrl)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+    toast.success('Webhook URL copied to clipboard!')
+  }
+
+  const copyNgrokCmd = () => {
+    navigator.clipboard.writeText('npx ngrok http 5000')
+    setCopiedCmd(true)
+    setTimeout(() => setCopiedCmd(false), 2000)
+    toast.success('Copied: npx ngrok http 5000')
+  }
+
+  const handleTestPublicPing = async () => {
+    if (!effectiveBaseUrl.startsWith('http')) {
+      toast.error('Invalid URL')
+      return
+    }
+    setIsTestingPing(true)
+    setPingResult(null)
+    try {
+      const res = await api.post<{ ok: boolean; status: number; latencyMs: number; error?: string }>(
+        '/api/admin/flows/ngrok-tunnel/test-ping',
+        { url: webhookUrl }
+      )
+      setPingResult(res)
+      if (res.ok) {
+        toast.success(`Webhook endpoint is reachable! (${res.latencyMs}ms)`)
+      } else {
+        toast.error(`Ping failed: ${res.error || `HTTP ${res.status}`}`)
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setPingResult({ ok: false, status: 0, latencyMs: 0, error: msg })
+      toast.error(`Ping error: ${msg}`)
+    } finally {
+      setIsTestingPing(false)
+    }
+  }
+
+  const handleTestWhatsAppDispatch = async () => {
+    const phoneId = String(d.whatsappPhoneId || '').trim()
+    const apiKey = String(d.whatsappApiKey || '').trim()
+    if (!phoneId) {
+      toast.error('Please enter Phone Number ID (phone_id) first')
+      return
+    }
+    if (!apiKey) {
+      toast.error('Please enter Panel API Key (apikey) first')
+      return
+    }
+    if (!testWaPhone.trim()) {
+      toast.error('Please enter recipient phone number to test')
+      return
+    }
+
+    setIsTestingWa(true)
+    setWaTestResult(null)
+    try {
+      const res = await api.post<{ ok: boolean; status?: number; error?: string; data?: any }>(
+        '/api/admin/flows/test-whatsapp-dispatch',
+        {
+          phoneId,
+          apiKey,
+          to: testWaPhone.trim(),
+          apiUrl: d.whatsappBaseUrl || 'https://partnersv1.pinbot.ai/v3',
+          provider: d.whatsappProvider || 'cloudgateway',
+          text: 'Hello! This is a test message from your Cloud Gateway WhatsApp Bot.',
+        }
+      )
+      setWaTestResult(res)
+      if (res.ok) {
+        toast.success(`Test WhatsApp message sent to ${testWaPhone}!`)
+      } else {
+        toast.error(`WhatsApp Dispatch failed: ${res.error || `HTTP ${res.status}`}`)
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setWaTestResult({ ok: false, error: msg })
+      toast.error(`Error: ${msg}`)
+    } finally {
+      setIsTestingWa(false)
+    }
+  }
+
+  const handleSimulateCrm = async () => {
+    setIsSimulating(true)
+    setSimResult(null)
+    try {
+      let parsed = {}
+      try {
+        parsed = JSON.parse(samplePayload)
+      } catch {
+        toast.error('Sample payload must be valid JSON')
+        setIsSimulating(false)
+        return
+      }
+
+      const res = await fetch(`/hooks/flow/${flowId || 'active'}/${nodeId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(parsed),
+      })
+      const data = await res.json()
+      setSimResult({ status: res.status, data })
+      if (res.ok) {
+        toast.success('CRM Webhook received & flow executed!')
+      } else {
+        toast.error(`CRM Webhook returned status ${res.status}`)
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      toast.error('Failed to trigger webhook')
+      setSimResult({ status: 0, error: msg })
+    } finally {
+      setIsSimulating(false)
+    }
+  }
+
+  return (
+    <>
+      {/* ── Mode selector: Incoming CRM vs Outgoing ── */}
+      <div>
+        <label className="block text-[12.5px] font-medium text-ink mb-1.5">Webhook Direction</label>
+        <div className="grid grid-cols-2 gap-1.5">
+          <button
+            type="button"
+            onClick={() => onChange({ webhookType: 'incoming' })}
+            className={cn(
+              'rounded-md border p-2 text-left transition-all',
+              mode === 'incoming'
+                ? 'border-signal bg-signal-soft text-signal-ink font-medium shadow-sm'
+                : 'border-line bg-panel text-muted hover:border-line-strong hover:text-ink'
+            )}
+          >
+            <span className="block text-[12.5px] font-semibold text-ink">Incoming (CRM Trigger)</span>
+            <span className="block text-[11px] leading-snug text-muted mt-0.5">
+              Copy predefined URL to your CRM panel
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onChange({ webhookType: 'outgoing' })}
+            className={cn(
+              'rounded-md border p-2 text-left transition-all',
+              mode === 'outgoing'
+                ? 'border-signal bg-signal-soft text-signal-ink font-medium shadow-sm'
+                : 'border-line bg-panel text-muted hover:border-line-strong hover:text-ink'
+            )}
+          >
+            <span className="block text-[12.5px] font-semibold text-ink">Outgoing Webhook</span>
+            <span className="block text-[11px] leading-snug text-muted mt-0.5">
+              POST flow variables to an external URL
+            </span>
+          </button>
+        </div>
+      </div>
+
+      {mode === 'incoming' ? (
+        <>
+          {/* ── Predefined Webhook URL with ngrok Support ── */}
+          <div className="rounded-lg border border-line bg-paper/50 p-3 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <label className="text-[12.5px] font-semibold text-ink flex items-center gap-1.5">
+                <Webhook className="size-3.5 text-signal" />
+                Predefined Webhook URL
+              </label>
+              <div className="flex items-center gap-1">
+                {tunnelInfo?.active ? (
+                  <Badge tone="live" className="gap-1">
+                    <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    ngrok Live
+                  </Badge>
+                ) : isLocalhost ? (
+                  <Badge tone="warn">Localhost</Badge>
+                ) : (
+                  <Badge tone="live">Public</Badge>
+                )}
+                <Badge tone="neutral">POST</Badge>
+              </div>
+            </div>
+
+            <p className="text-[12px] text-muted">
+              Copy this webhook URL into your CRM panel (HubSpot, Zoho, Salesforce, Zapier, etc.) so CRM events trigger this flow:
+            </p>
+
+            <div className="flex items-center gap-1.5 rounded-md border border-line bg-panel px-2.5 py-1.5">
+              <code className="flex-1 truncate font-mono text-[11.5px] text-signal select-all">
+                {webhookUrl}
+              </code>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={copyUrl}
+                className="h-7 px-2 text-[11.5px] shrink-0 gap-1"
+              >
+                {copied ? <Check className="size-3 text-emerald-600" /> : <Copy className="size-3" />}
+                {copied ? 'Copied' : 'Copy'}
+              </Button>
+            </div>
+
+            {/* ── ngrok localhost live testing panel ── */}
+            <div className="rounded-md border border-line bg-panel p-2.5 text-[11.5px] space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-ink flex items-center gap-1.5">
+                  <Radio className="size-3 text-signal" />
+                  ngrok Localhost Live Testing
+                </span>
+                <button
+                  type="button"
+                  onClick={() => checkTunnel()}
+                  disabled={isCheckingTunnel}
+                  className="flex items-center gap-1 text-[10.5px] text-muted hover:text-signal"
+                  title="Refresh ngrok detection"
+                >
+                  <RefreshCw className={cn('size-2.5', isCheckingTunnel && 'animate-spin')} />
+                  {isCheckingTunnel ? 'Checking…' : 'Refresh'}
+                </button>
+              </div>
+
+              {tunnelInfo?.active ? (
+                <div className="flex items-center justify-between rounded bg-emerald-500/10 px-2 py-1 text-emerald-800 dark:text-emerald-300">
+                  <span className="truncate">
+                    <strong>Connected:</strong> {tunnelInfo.publicUrl}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleTestPublicPing}
+                    disabled={isTestingPing}
+                    className="h-6 px-1.5 text-[10.5px] text-emerald-700 hover:bg-emerald-500/20"
+                  >
+                    {isTestingPing ? 'Pinging…' : 'Test Ping'}
+                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  <p className="text-muted leading-relaxed">
+                    External CRMs cannot reach <code className="text-ink">localhost</code> directly. Start an ngrok tunnel to expose your port 5000:
+                  </p>
+                  <div className="flex items-center gap-1.5 rounded bg-paper px-2 py-1 font-mono text-[11px] border border-line">
+                    <Terminal className="size-3 text-muted shrink-0" />
+                    <span className="flex-1 text-ink select-all">npx ngrok http 5000</span>
+                    <button
+                      type="button"
+                      onClick={copyNgrokCmd}
+                      className="text-signal hover:underline shrink-0 text-[10.5px]"
+                    >
+                      {copiedCmd ? 'Copied!' : 'Copy'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Custom / Manual Tunnel URL Input */}
+              <div className="pt-1">
+                <label className="text-[10.5px] text-muted block mb-1">
+                  Custom or Permanent ngrok Domain (optional):
+                </label>
+                <div className="flex items-center gap-1.5">
+                  <Input
+                    value={d.ngrokUrl ?? ''}
+                    onChange={(e) => onChange({ ngrokUrl: e.target.value.trim() })}
+                    placeholder={tunnelInfo?.publicUrl || 'https://xxxx.ngrok-free.app'}
+                    className="h-7 text-[11px] font-mono"
+                  />
+                  {d.ngrokUrl ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => onChange({ ngrokUrl: undefined })}
+                      className="h-7 px-1.5 text-[10.5px] text-muted hover:text-fault"
+                    >
+                      Reset
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+
+              {pingResult ? (
+                <div className="rounded bg-paper p-1.5 font-mono text-[10.5px] border border-line flex items-center justify-between">
+                  <span className={pingResult.ok ? 'text-emerald-600' : 'text-fault'}>
+                    {pingResult.ok ? `HTTP ${pingResult.status} Ready` : pingResult.error || `HTTP ${pingResult.status}`}
+                  </span>
+                  <span className="text-muted">{pingResult.latencyMs}ms</span>
+                </div>
+              ) : null}
+            </div>
+
+            <p className="text-[11.5px] text-muted leading-relaxed">
+              When CRM posts data to this URL, it starts the flow and stores the incoming JSON in{' '}
+              <strong className="font-mono text-ink">{'{{' + (d.resultVar || 'webhookPayload') + '}}'}</strong>.
+            </p>
+          </div>
+
+          <Field
+            label="Save incoming payload as"
+            htmlFor={id('resVar')}
+            hint="Used by the subsequent JSON node to extract fields"
+          >
+            <Input
+              id={id('resVar')}
+              value={d.resultVar ?? 'webhookPayload'}
+              onChange={(e) => onChange({ resultVar: slug(e.target.value) })}
+              className="font-mono text-[12.5px]"
+              placeholder="webhookPayload"
+            />
+          </Field>
+
+          {/* ── WhatsApp & Cloud Gateway Dispatch Settings ── */}
+          <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <MessageSquare className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+                <span className="text-[12.5px] font-semibold text-ink">
+                  Cloud Gateway WhatsApp Dispatch
+                </span>
+              </div>
+              <Badge tone={d.whatsappApiKey && d.whatsappPhoneId ? 'live' : 'warn'}>
+                {d.whatsappApiKey && d.whatsappPhoneId ? 'Configured' : 'Setup Required'}
+              </Badge>
+            </div>
+
+            <p className="text-[11.5px] text-muted leading-relaxed">
+              When the AI generates a reply, it automatically sends it to the customer on WhatsApp via your Cloud Gateway / PinBot panel.
+            </p>
+
+            {onOpenDeploy ? (
+              <Button
+                type="button"
+                onClick={onOpenDeploy}
+                className="w-full justify-center gap-1.5 bg-live hover:bg-live/90 text-white font-medium shadow-xs"
+              >
+                <Rocket className="size-3.5" /> Deploy This Flow to WhatsApp
+              </Button>
+            ) : null}
+
+            {/* Cloud Gateway Endpoint URL */}
+            <Field
+              label="Endpoint URL"
+              htmlFor={id('wa-endpoint-url')}
+              hint="e.g. https://partnersv1.pinbot.ai/v3/<<phone_id>>/messages or https://partnersv1.pinbot.ai/v3"
+            >
+              <div className="relative">
+                <Globe className="absolute left-2.5 top-2.5 size-3.5 text-muted" />
+                <Input
+                  id={id('wa-endpoint-url')}
+                  value={(d.whatsappBaseUrl as string) ?? ''}
+                  onChange={(e) => onChange({ whatsappBaseUrl: e.target.value.trim() })}
+                  placeholder="https://partnersv1.pinbot.ai/v3"
+                  className="pl-8 font-mono text-[12px]"
+                />
+              </div>
+              <p className="mt-1 text-[11px] text-muted">
+                Cloud Gateway / PinBot endpoint URL where outgoing WhatsApp replies are POSTed.
+              </p>
+            </Field>
+
+            {/* Phone Number ID */}
+            <Field
+              label="Phone Number ID (phone_id)"
+              htmlFor={id('wa-phone-id')}
+              hint="Client's WhatsApp phone_id from Cloud Gateway panel"
+            >
+              <div className="relative">
+                <Phone className="absolute left-2.5 top-2.5 size-3.5 text-muted" />
+                <Input
+                  id={id('wa-phone-id')}
+                  value={(d.whatsappPhoneId as string) ?? ''}
+                  onChange={(e) => onChange({ whatsappPhoneId: e.target.value.trim() })}
+                  placeholder="e.g. 102938475610293"
+                  className="pl-8 font-mono text-[12px]"
+                />
+              </div>
+            </Field>
+
+            {/* Panel API Key */}
+            <Field
+              label="Panel API Key (apikey)"
+              htmlFor={id('wa-api-key')}
+              hint="Header 'apikey: <<key>>' sent to https://partnersv1.pinbot.ai/v3"
+            >
+              <div className="relative">
+                <Key className="absolute left-2.5 top-2.5 size-3.5 text-muted" />
+                <Input
+                  id={id('wa-api-key')}
+                  type={showApiKey ? 'text' : 'password'}
+                  value={(d.whatsappApiKey as string) ?? ''}
+                  onChange={(e) => onChange({ whatsappApiKey: e.target.value.trim() })}
+                  placeholder="Enter client's panel API Key..."
+                  className="pl-8 pr-8 font-mono text-[12px]"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowApiKey((s) => !s)}
+                  className="absolute right-2.5 top-2.5 text-muted hover:text-ink"
+                  title={showApiKey ? 'Hide API key' : 'Show API key'}
+                >
+                  {showApiKey ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+                </button>
+              </div>
+            </Field>
+
+            {/* Live Test WhatsApp Message */}
+            <div className="rounded-md border border-line bg-panel p-2.5 space-y-2">
+              <span className="text-[11px] font-semibold text-ink flex items-center gap-1">
+                <Sparkles className="size-3 text-signal" />
+                Live Test Dispatch to WhatsApp Number
+              </span>
+              <div className="flex items-center gap-1.5">
+                <Input
+                  value={testWaPhone}
+                  onChange={(e) => setTestWaPhone(e.target.value)}
+                  placeholder="918076271987"
+                  className="h-7 text-[11px] font-mono"
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={handleTestWhatsAppDispatch}
+                  disabled={isTestingWa || !d.whatsappPhoneId || !d.whatsappApiKey}
+                  className="h-7 px-2 text-[11px] shrink-0 gap-1 bg-emerald-600 hover:bg-emerald-700 text-white"
+                >
+                  {isTestingWa ? <Spinner className="size-3" /> : <Send className="size-3" />}
+                  {isTestingWa ? 'Testing…' : 'Send Test'}
+                </Button>
+              </div>
+              {waTestResult ? (
+                <div className="rounded bg-paper p-1.5 font-mono text-[10.5px] border border-line">
+                  <span className={waTestResult.ok ? 'text-emerald-600' : 'text-fault'}>
+                    {waTestResult.ok ? '✅ Message sent via Cloud Gateway!' : `❌ ${waTestResult.error}`}
+                  </span>
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          {/* Test / Simulate CRM / WhatsApp Webhook */}
+          <div className="rounded-lg border border-line bg-panel p-3">
+            <div className="flex items-center justify-between mb-1.5">
+              <p className="text-[12.5px] font-semibold text-ink flex items-center gap-1.5">
+                <Sparkles className="size-3.5 text-signal" />
+                Simulate Webhook Live
+              </p>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setSamplePayload(JSON.stringify(WHATSAPP_SAMPLE, null, 2))}
+                  className="rounded px-1.5 py-0.5 text-[10px] bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 font-semibold hover:bg-emerald-500/25 transition-colors"
+                >
+                  WhatsApp
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSamplePayload(JSON.stringify(CRM_SAMPLE, null, 2))}
+                  className="rounded px-1.5 py-0.5 text-[10px] bg-paper text-muted font-medium hover:text-ink hover:bg-line transition-colors"
+                >
+                  CRM Lead
+                </button>
+              </div>
+            </div>
+            <p className="text-[11.5px] text-muted mb-2">
+              Send a test payload to check live ingestion, MCP server context, and AI output:
+            </p>
+
+            <Textarea
+              value={samplePayload}
+              onChange={(e) => setSamplePayload(e.target.value)}
+              className="min-h-24 font-mono text-[11px]"
+              spellCheck={false}
+            />
+
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={handleSimulateCrm}
+              disabled={isSimulating}
+              className="w-full mt-2 justify-center gap-1.5"
+            >
+              {isSimulating ? <Spinner className="size-3.5" /> : <Send className="size-3.5" />}
+              {isSimulating ? 'Sending Request…' : 'Send Test CRM Request'}
+            </Button>
+
+            {simResult ? (
+              <div className="mt-2.5 rounded bg-paper p-2 font-mono text-[11px] border border-line">
+                <div className="flex items-center justify-between mb-1">
+                  <Badge tone={simResult.status === 200 ? 'live' : 'fault'}>
+                    HTTP {simResult.status}
+                  </Badge>
+                  {simResult.data?.recipientId ? (
+                    <span className="text-[11px] text-signal font-semibold">
+                      Recipient: {simResult.data.recipientId}
+                    </span>
+                  ) : null}
+                </div>
+                {simResult.data?.reply ? (
+                  <p className="text-ink font-sans text-[12px] bg-panel p-1.5 rounded mb-1 border border-line">
+                    <strong>AI Output:</strong> {simResult.data.reply}
+                  </p>
+                ) : null}
+                <pre className="text-muted max-h-36 overflow-y-auto whitespace-pre-wrap">
+                  {JSON.stringify(simResult.data || simResult.error, null, 2)}
+                </pre>
+              </div>
+            ) : null}
+          </div>
+        </>
+      ) : (
+        <>
+          <Field label="URL" htmlFor={id('url')} hint="All saved answers are POSTed as JSON: { variables: { name, phone, … } }">
+            <Input id={id('url')} value={d.url ?? ''} onChange={(e) => onChange({ url: e.target.value })} className="font-mono text-[12.5px]" placeholder="https://..." />
+          </Field>
+          <p className="text-[12.5px] text-muted">The response status is saved as {'{{webhookStatus}}'}.</p>
+        </>
+      )}
+    </>
+  )
+}
+
+/**
+ * JSON Node Inspector:
+ * - Parses incoming webhook payload or custom JSON
+ * - Extracts specific fields into variables (e.g. recipientId, name, phone, message)
+ * - Auto-detects recipientId for AI reply delivery
+ */
+function JsonFields({
+  d,
+  id,
+  variables,
+  onChange,
+}: {
+  d: BoxData
+  id: (k: string) => string
+  variables: string[]
+  onChange: (p: Partial<BoxData>) => void
+}) {
+  const mappings = (d.mappings as Array<{ id: string; path: string; varName: string }> | undefined) ?? [
+    { id: uid('map'), path: 'recipientId', varName: 'recipientId' },
+    { id: uid('map'), path: 'name', varName: 'name' },
+    { id: uid('map'), path: 'message', varName: 'message' },
+  ]
+
+  const setMapping = (index: number, patch: Partial<{ path: string; varName: string }>) => {
+    const updated = [...mappings]
+    updated[index] = { ...updated[index], ...patch }
+    onChange({ mappings: updated })
+  }
+
+  const addMapping = (path = '', varName = '') => {
+    onChange({
+      mappings: [...mappings, { id: uid('map'), path, varName: varName || slug(path) }],
+    })
+  }
+
+  const removeMapping = (index: number) => {
+    onChange({ mappings: mappings.filter((_, i) => i !== index) })
+  }
+
+  return (
+    <>
+      <Field
+        label="Source JSON Variable"
+        htmlFor={id('sourceVar')}
+        hint="Variable containing the webhook JSON (e.g. {{webhookPayload}})"
+      >
+        <Input
+          id={id('sourceVar')}
+          value={d.sourceVar ?? 'webhookPayload'}
+          onChange={(e) => onChange({ sourceVar: slug(e.target.value) })}
+          className="font-mono text-[12.5px]"
+          placeholder="webhookPayload"
+        />
+      </Field>
+
+      {variables.length ? (
+        <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted -mt-2">
+          <span>Available variables:</span>
+          {variables.map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => onChange({ sourceVar: v })}
+              className="rounded bg-paper px-1.5 py-0.5 font-mono text-signal hover:bg-signal-soft"
+            >
+              {`{{${v}}}`}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {/* Field Extractions */}
+      <div className="rounded-lg border border-line bg-paper/40 p-3">
+        <div className="flex items-center justify-between mb-1.5">
+          <label className="text-[12.5px] font-semibold text-ink flex items-center gap-1.5">
+            <FileCode className="size-3.5 text-signal" />
+            Field Extractions
+          </label>
+          <span className="text-[11px] text-muted">{mappings.length} mapping(s)</span>
+        </div>
+        <p className="text-[11.5px] text-muted mb-2.5">
+          Extract specific fields from the CRM JSON payload and store them into flow variables:
+        </p>
+
+        {/* Quick add CRM fields */}
+        <div className="flex flex-wrap items-center gap-1 mb-2.5 text-[11px] text-muted">
+          <span>Quick add:</span>
+          {['recipientId', 'name', 'phone', 'email', 'message'].map((f) => (
+            <button
+              key={f}
+              type="button"
+              onClick={() => {
+                if (!mappings.some((m) => m.path === f)) {
+                  addMapping(f, f)
+                }
+              }}
+              className="rounded bg-paper px-1.5 py-0.5 font-mono text-signal hover:bg-signal-soft border border-line"
+            >
+              + {f}
+            </button>
+          ))}
+        </div>
+
+        <ul className="grid gap-2">
+          {mappings.map((m, i) => (
+            <li key={m.id || i} className="flex items-center gap-1.5 rounded-md border border-line bg-panel p-1.5">
+              <div className="flex-1">
+                <span className="block text-[10px] text-muted uppercase font-mono">JSON Path</span>
+                <Input
+                  value={m.path}
+                  onChange={(e) => setMapping(i, { path: e.target.value })}
+                  placeholder="e.g. recipientId"
+                  className="h-7 font-mono text-[11.5px]"
+                />
+              </div>
+              <span className="text-muted text-sm pt-3">➔</span>
+              <div className="flex-1">
+                <span className="block text-[10px] text-muted uppercase font-mono">Variable Name</span>
+                <Input
+                  value={m.varName}
+                  onChange={(e) => setMapping(i, { varName: slug(e.target.value) })}
+                  placeholder="e.g. recipientId"
+                  className="h-7 font-mono text-[11.5px]"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => removeMapping(i)}
+                className="mt-3 rounded p-1 text-muted hover:bg-paper hover:text-fault"
+                title="Remove mapping"
+              >
+                <X className="size-3.5" />
+              </button>
+            </li>
+          ))}
+        </ul>
+
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => addMapping('', '')}
+          className="mt-2 text-[12px] gap-1"
+        >
+          <Plus className="size-3.5" /> Add Field Mapping
+        </Button>
+      </div>
+
+      <Field
+        label="Save full parsed JSON as (optional)"
+        htmlFor={id('resVar')}
+        hint="Stores the whole object as {{jsonData}}"
+      >
+        <Input
+          id={id('resVar')}
+          value={d.resultVar ?? 'jsonData'}
+          onChange={(e) => onChange({ resultVar: slug(e.target.value) })}
+          className="font-mono text-[12px]"
+          placeholder="jsonData"
+        />
+      </Field>
+
+      <div className="rounded-md border border-line bg-paper/60 px-3 py-2 text-[12px] text-muted leading-relaxed">
+        💡 <strong>Next Step:</strong> Connect the bottom output wire of this JSON node to the <strong>AI reply</strong> node. The AI node will automatically use <strong className="font-mono text-ink">{'{{recipientId}}'}</strong> to address and deliver the message!
       </div>
     </>
   )

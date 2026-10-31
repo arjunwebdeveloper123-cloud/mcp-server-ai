@@ -1,8 +1,8 @@
-import { Bot, Flag, GitBranch, Globe, Hand, ListChecks, MessageSquare, MessageCircleQuestion, Play, Plug, Webhook, type LucideIcon } from 'lucide-react'
+import { Bot, FileCode, Flag, GitBranch, Globe, Hand, ListChecks, MessageSquare, MessageCircleQuestion, Play, Plug, Webhook, type LucideIcon } from 'lucide-react'
 
 /* Flow builder ke box types — palette, canvas aur inspector teeno yahi use karte hain */
 
-export type BoxType = 'start' | 'message' | 'question' | 'buttons' | 'condition' | 'ai' | 'tool' | 'webhook' | 'handoff' | 'end' | 'api'
+export type BoxType = 'start' | 'message' | 'question' | 'buttons' | 'condition' | 'ai' | 'tool' | 'webhook' | 'handoff' | 'end' | 'api' | 'json'
 export type ButtonOption = { id: string; label: string; value?: string }
 
 export type AiProvider = 'gemini' | 'openai' | 'anthropic' | 'groq' | 'custom'
@@ -40,6 +40,17 @@ export type BoxData = Record<string, unknown> & {
   statusVar?: string
   responsePath?: string
   outputMode?: 'single' | 'branch'
+  // Webhook Node settings
+  webhookType?: 'incoming' | 'outgoing'
+  webhookToken?: string
+  useNgrok?: boolean
+  ngrokUrl?: string
+  // JSON Node settings
+  sourceVar?: string
+  jsonInput?: string
+  mappings?: Array<{ id: string; path: string; varName: string }>
+  // AI Node recipient targeting
+  recipientVar?: string
 }
 
 export const uid = (p: string) => `${p}-${Math.random().toString(36).slice(2, 8)}`
@@ -81,9 +92,9 @@ export const AI_PROVIDERS: Record<AiProvider, AiProviderInfo> = {
     models: [
       { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash', badge: 'Recommended • Latest' },
       { id: 'gemini-3.8-pro', label: 'Gemini 3.8 Pro', badge: 'Reasoning' },
-      { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', badge: 'Fast' },
-      { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash', badge: 'Stable' },
-      { id: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash', badge: 'Legacy' },
+      { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash', badge: 'Fast & Stable' },
+      { id: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash', badge: 'High Quota' },
+      { id: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro', badge: 'Pro Complex' },
     ],
   },
   openai: {
@@ -255,11 +266,33 @@ export const BOXES: Record<BoxType, Meta> = {
   },
   webhook: {
     title: 'Webhook',
-    description: 'Send the answers to a URL',
+    description: 'Predefined CRM URL & trigger',
     icon: Webhook,
     tone: 'live',
     inPalette: true,
-    defaults: () => ({ label: 'Send to CRM', url: 'https://' }),
+    defaults: () => ({
+      label: 'CRM Webhook',
+      webhookType: 'incoming',
+      resultVar: 'webhookPayload',
+      url: '',
+    }),
+  },
+  json: {
+    title: 'JSON parse',
+    description: 'Parse CRM payload & extract fields',
+    icon: FileCode,
+    tone: 'signal',
+    inPalette: true,
+    defaults: () => ({
+      label: 'Parse CRM JSON',
+      sourceVar: 'webhookPayload',
+      resultVar: 'jsonData',
+      mappings: [
+        { id: uid('map'), path: 'recipientId', varName: 'recipientId' },
+        { id: uid('map'), path: 'name', varName: 'name' },
+        { id: uid('map'), path: 'message', varName: 'message' },
+      ],
+    }),
   },
   handoff: {
     title: 'Human handoff',
@@ -321,7 +354,14 @@ export function summary(type: BoxType, d: BoxData): string {
       return `${meth} ${targetUrl} → {{${resVar}}}`
     }
     case 'webhook':
-      return d.url ?? ''
+      if (d.webhookType === 'outgoing' && d.url) return `POST → ${d.url}`
+      return `Predefined CRM Webhook → {{${d.resultVar || 'webhookPayload'}}}`
+    case 'json': {
+      const src = d?.sourceVar || 'webhookPayload'
+      const maps = Array.isArray(d?.mappings) ? d.mappings : []
+      const fields = maps.map((m: any) => `{{${m?.varName || m?.path || ''}}}`).filter(Boolean).join(', ')
+      return `{{${src}}} → ${fields || 'parsed fields'}`
+    }
     default:
       return 'Conversation starts here'
   }
@@ -330,7 +370,7 @@ export function summary(type: BoxType, d: BoxData): string {
 /** Ek box se nikalne wale arrows ke "ports" (handles) */
 export function outputs(type: BoxType, d: BoxData): { id: string | null; label?: string }[] {
   if (type === 'end' || type === 'handoff') return []
-  if (type === 'buttons') return (d.options ?? []).map((o) => ({ id: o.id, label: o.label }))
+  if (type === 'buttons') return (Array.isArray(d?.options) ? d.options : []).map((o) => ({ id: o.id, label: o.label }))
   if (type === 'condition') return [
     { id: 'true', label: 'Yes' },
     { id: 'false', label: 'No' },

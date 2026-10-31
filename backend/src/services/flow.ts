@@ -16,7 +16,7 @@ import { parseDate, parseTime } from "./providers/demo.js";
 
     Conversation ka state (kaunse box par ruke hain, variables) MongoDB me conversation.state.flow me rehta hai. */
 
-export type NodeType = "start" | "message" | "question" | "buttons" | "condition" | "ai" | "tool" | "api" | "webhook" | "handoff" | "end";
+export type NodeType = "start" | "message" | "question" | "buttons" | "condition" | "ai" | "tool" | "api" | "webhook" | "handoff" | "end" | "json";
 export type FlowNode = { id: string; type: NodeType; position?: { x: number; y: number }; data: Record<string, unknown> };
 export type FlowEdge = { id: string; source: string; target: string; sourceHandle?: string | null };
 export type FlowDoc = { _id: unknown; name: string; nodes: FlowNode[]; edges: FlowEdge[] };
@@ -36,12 +36,21 @@ export type FlowRunContext = {
   state: Record<string, unknown>; // conversation.state (isme "flow" key)
   sessionId: string;
   channel: string;
+  initialVars?: Record<string, string>;
+  startNodeId?: string;
   askAI: (instruction: string, vars: Record<string, string>, nodeData?: Record<string, unknown>) => Promise<string>;
   runTool: (name: string, input: Record<string, unknown>) => Promise<{ output: string; isError: boolean }>;
   emitHandoff: (vars: Record<string, string>) => void;
 };
 
-export type FlowResult = { reply: string; quickReplies?: string[]; needsHuman?: boolean; trace: string[] };
+export type FlowResult = {
+  reply: string;
+  quickReplies?: string[];
+  needsHuman?: boolean;
+  trace: string[];
+  recipientId?: string;
+  variables?: Record<string, string>;
+};
 
 const MAX_STEPS = 30; // galti se bana loop (A → B → A) atak na jaaye
 
@@ -134,12 +143,30 @@ export async function runFlow(ctx: FlowRunContext): Promise<FlowResult> {
   if (!fs || fs.flowId !== flowId || (fs.nodeId && !nodes.has(fs.nodeId))) fs = { flowId, vars: {} };
   ctx.state.flow = fs;
   fs.vars.lastMessage = ctx.text;
+  if (ctx.initialVars) {
+    Object.assign(fs.vars, ctx.initialVars);
+  }
 
   const label = (n: FlowNode) => str(n.data.label) || n.type;
   const nextOf = (id: string, handle?: string) =>
     flow.edges.find((e) => e.source === id && (handle ? e.sourceHandle === handle : !e.sourceHandle || e.sourceHandle === "next"))?.target;
-  const finish = (r: Omit<FlowResult, "trace">): FlowResult => ({ ...r, reply: out.join("\n\n").trim() || r.reply, trace });
+  const finish = (r: Omit<FlowResult, "trace">): FlowResult => {
+    const finalRecipient = r.recipientId || fs?.vars.recipientId || fs?.vars.phone || fs?.vars.to || lastCapturedRecipient;
+    const finalVars = r.variables || (Object.keys(fs?.vars || {}).length ? { ...fs?.vars } : lastCapturedVars);
+    return {
+      ...r,
+      reply: out.join("\n\n").trim() || r.reply,
+      trace,
+      recipientId: finalRecipient,
+      variables: finalVars,
+    };
+  };
+  let lastCapturedVars: Record<string, string> = {};
+  let lastCapturedRecipient: string | undefined;
+
   const resetFlow = () => {
+    lastCapturedVars = { ...fs?.vars };
+    lastCapturedRecipient = fs?.vars.recipientId || fs?.vars.phone || fs?.vars.to;
     fs!.nodeId = undefined;
     fs!.waiting = undefined;
     fs!.vars = {};
@@ -203,10 +230,14 @@ export async function runFlow(ctx: FlowRunContext): Promise<FlowResult> {
     fs.nodeId = undefined;
   } else {
     /* 2. Naya flow — Start box se */
-    const start = flow.nodes.find((n) => n.type === "start");
+    if (ctx.startNodeId && nodes.has(ctx.startNodeId)) {
+      current = ctx.startNodeId;
+    } else {
+      const start = flow.nodes.find((n) => n.type === "start");
     if (!start) return { reply: "", trace: ["no start box"] };
     trace.push("Start");
-    current = nextOf(start.id);
+      current = nextOf(start.id);
+    }
   }
 
   /* 3. Boxes chalao jab tak koi box jawab ka intezaar na kare */
@@ -368,6 +399,17 @@ export async function runFlow(ctx: FlowRunContext): Promise<FlowResult> {
       }
 
       case "webhook": {
+        const isIncoming = str(d.webhookType) === "incoming" || (!str(d.url) && str(d.webhookType) !== "outgoing");
+        if (isIncoming) {
+          const resVar = str(d.resultVar) || "webhookPayload";
+          if (!fs.vars[resVar] && fs.vars.webhookPayload) {
+            fs.vars[resVar] = fs.vars.webhookPayload;
+          }
+          trace.push(`webhook incoming (CRM trigger) → {{${resVar}}}`);
+          current = nextOf(node.id);
+          break;
+        }
+
         const url = interpolate(str(d.url), fs.vars);
         let status = "skipped";
         if (/^https?:\/\//.test(url)) {
@@ -385,6 +427,65 @@ export async function runFlow(ctx: FlowRunContext): Promise<FlowResult> {
         }
         fs.vars.webhookStatus = status;
         trace.push(`webhook → ${status}`);
+        current = nextOf(node.id);
+        break;
+      }
+
+      case "json": {
+        const sourceVarName = str(d.sourceVar) || "webhookPayload";
+        let rawContent = fs.vars[sourceVarName] ?? "";
+        if (!rawContent && d.jsonInput) {
+          rawContent = interpolate(str(d.jsonInput), fs.vars);
+        }
+
+        let parsedObj: any = null;
+        try {
+          parsedObj = typeof rawContent === "object" && rawContent !== null ? rawContent : JSON.parse(rawContent);
+        } catch {
+          parsedObj = null;
+        }
+
+        if (parsedObj && typeof parsedObj === "object") {
+          const resVar = str(d.resultVar) || "jsonData";
+          fs.vars[resVar] = JSON.stringify(parsedObj, null, 2);
+
+          const mappings = Array.isArray(d.mappings) ? d.mappings : [];
+          const extractedKeys: string[] = [];
+
+          for (const m of mappings) {
+            const pathStr = str(m.path || m.key).trim();
+            const varStr = str(m.varName || m.variable).trim();
+            if (pathStr && varStr) {
+              const val = getPathValue(parsedObj, pathStr);
+              if (val !== undefined && val !== null) {
+                fs.vars[varStr] = typeof val === "object" ? JSON.stringify(val) : String(val);
+                extractedKeys.push(varStr);
+              }
+            }
+          }
+
+          // Auto-detect recipientId if not explicitly set
+          if (!fs.vars.recipientId) {
+            const autoRecipient =
+              parsedObj.recipientId ??
+              parsedObj.recipient_id ??
+              parsedObj.phone ??
+              parsedObj.to ??
+              parsedObj.from ??
+              parsedObj.id ??
+              parsedObj.customer?.phone ??
+              parsedObj.customer?.id;
+            if (autoRecipient) {
+              fs.vars.recipientId = String(autoRecipient);
+              extractedKeys.push("recipientId");
+            }
+          }
+
+          trace.push(`json parse [${sourceVarName}] → extracted [${extractedKeys.join(", ")}]`);
+        } else {
+          trace.push(`json parse [${sourceVarName}] → invalid or empty JSON`);
+        }
+
         current = nextOf(node.id);
         break;
       }
@@ -443,6 +544,13 @@ export function validateFlow(nodes: FlowNode[], edges: FlowEdge[], toolNames: st
           errors.push(`"${name}": headers must be valid JSON.`);
         }
       }
+    }
+    if (n.type === "webhook" && str(n.data.webhookType) === "outgoing" && !str(n.data.url).trim()) {
+      errors.push(`"${name}": enter an outgoing webhook URL.`);
+    }
+    if (n.type === "json") {
+      const maps = Array.isArray(n.data.mappings) ? n.data.mappings : [];
+      if (!maps.length) warnings.push(`"${name}": add at least one field mapping (e.g. recipientId).`);
     }
     if (n.type === "condition" && !str(n.data.variable)) errors.push(`"${name}": choose a variable to check.`);
     if (n.type === "ai") {

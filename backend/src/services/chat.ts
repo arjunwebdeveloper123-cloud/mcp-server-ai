@@ -22,7 +22,7 @@ const HISTORY_LIMIT = 30; // AI ko last 30 messages bhejte hain
     conversation load → relevant knowledge → (published Flow  ya  AI provider) → MCP tools → reply → save → webhooks
     - Flow builder me koi flow "Published" hai to bot usi ke boxes follow karta hai (AI box me LLM)
     - Warna seedha AI provider (Claude / Free API / Ollama / Demo) — Bot settings se            */
-export async function handleMessage(sessionId: string, text: string, channel = "widget", opts: { testFlowId?: string } = {}) {
+export async function handleMessage(sessionId: string, text: string, channel = "widget", opts: { testFlowId?: string; initialVars?: Record<string, string>; startNodeId?: string } = {}) {
   const settings = await getSettings();
   const provider = getProvider(settings.provider);
 
@@ -110,15 +110,21 @@ export async function handleMessage(sessionId: string, text: string, channel = "
         state,
         sessionId,
         channel,
+        initialVars: opts.initialVars,
+        startNodeId: opts.startNodeId,
         runTool,
         emitHandoff: (vars) => emit("conversation.handoff", { sessionId, channel, variables: vars, lastMessage: text }),
         // Flow ka "AI reply" box
         askAI: async (instruction, vars, nodeData) => {
           const knowledge = await getKnowledge();
           const known = Object.entries(vars).filter(([k, v]) => v && k !== "lastMessage");
+          const mcpToolsDesc = tools.length
+            ? `\n\nConnected MCP Server Tools and capabilities:\n${tools.map((t) => `- ${t.name}: ${t.description}`).join("\n")}`
+            : "";
           const extra =
             (instruction ? `\n\nInstruction for this step: ${instruction}` : "") +
-            (known.length ? `\n\nWhat we already know about the customer: ${known.map(([k, v]) => `${k}=${v}`).join(", ")}` : "");
+            (known.length ? `\n\nWhat we already know about the customer: ${known.map(([k, v]) => `${k}=${v}`).join(", ")}` : "") +
+            mcpToolsDesc;
           const fullPrompt = promptWith(knowledge) + extra;
 
           // If this AI node has its own API key configured, use it directly!
@@ -185,5 +191,15 @@ export async function handleMessage(sessionId: string, text: string, channel = "
   await convo.save();
   emit("message.sent", { sessionId, channel, text: reply });
 
-  return { reply, quickReplies, provider: flow ? `flow` : provider.name, toolLog: toolLog.map(({ at: _at, ...t }) => t) };
+  const flowVars = (convo.state as any)?.flow?.vars as Record<string, string> | undefined;
+  const recipientId = flowVars?.recipientId || flowVars?.phone || flowVars?.to;
+
+  return {
+    reply,
+    quickReplies,
+    provider: flow ? `flow` : provider.name,
+    toolLog: toolLog.map(({ at: _at, ...t }) => t),
+    recipientId,
+    variables: flowVars,
+  };
 }

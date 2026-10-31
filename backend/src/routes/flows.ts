@@ -1,14 +1,17 @@
 import { Router } from "express";
+import mongoose from "mongoose";
 import { Flow, Settings, getSettings } from "../models/index.js";
 import { validateFlow, type FlowEdge, type FlowNode } from "../services/flow.js";
 import { blankFlow, templateFlow } from "../services/flowTemplate.js";
 import { listAllToolNames } from "../mcp/manager.js";
 import { testNodeAiKey } from "../services/providers/nodeAi.js";
+import { handleMessage } from "../services/chat.js";
+import { sendWhatsAppMessage } from "../services/whatsapp.js";
 import { asyncH, HttpError } from "../http.js";
 
 export const flowsRouter = Router();
 
-const NODE_TYPES = new Set(["start", "message", "question", "buttons", "condition", "ai", "tool", "webhook", "handoff", "end", "api"]);
+const NODE_TYPES = new Set(["start", "message", "question", "buttons", "condition", "ai", "tool", "webhook", "handoff", "end", "api", "json"]);
 
 /** Browser se aaya data saaf karo — sirf zaroori fields */
 function sanitize(body: Record<string, unknown>) {
@@ -227,5 +230,328 @@ flowsRouter.delete(
     await Settings.updateOne({ _id: "global", activeFlowId: req.params.id }, { activeFlowId: null });
     await Flow.deleteOne({ _id: req.params.id });
     res.json({ ok: true });
+  })
+);
+
+/* ════════════════ Incoming Flow Webhooks (CRM Trigger) ════════════════ */
+type WebhookEventLog = {
+  receivedAt: string;
+  nodeId?: string;
+  payload: unknown;
+  recipientId?: string;
+};
+const latestFlowWebhooks = new Map<string, WebhookEventLog>();
+
+export function recordFlowWebhookEvent(flowId: string, event: WebhookEventLog) {
+  latestFlowWebhooks.set(String(flowId), event);
+}
+
+flowsRouter.get(
+  "/:id/latest-webhook",
+  asyncH(async (req, res) => {
+    const event = latestFlowWebhooks.get(String(req.params.id)) || null;
+    res.json({ event });
+  })
+);
+
+/* ── Live ngrok Tunnel Detection & Public Testing Helper ── */
+flowsRouter.get(
+  "/ngrok-tunnel/status",
+  asyncH(async (_req, res) => {
+    const envUrl = (
+      process.env.NGROK_URL ||
+      process.env.PUBLIC_WEBHOOK_URL ||
+      process.env.PUBLIC_URL ||
+      ""
+    ).trim();
+
+    let ngrokApiUrl: string | null = null;
+    let tunnels: Array<{ name: string; public_url: string; proto: string }> = [];
+
+    // Query ngrok's local inspection API running on default port 4040
+    try {
+      const resp = await fetch("http://127.0.0.1:4040/api/tunnels", {
+        signal: AbortSignal.timeout(1500),
+      });
+      if (resp.ok) {
+        const data = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
+        tunnels = (data.tunnels as Array<{ name: string; public_url: string; proto: string }>) || [];
+        const httpsTunnel = tunnels.find((t) => t.proto === "https") || tunnels[0];
+        if (httpsTunnel?.public_url) {
+          ngrokApiUrl = httpsTunnel.public_url.replace(/\/+$/, "");
+        }
+      }
+    } catch {
+      // ngrok not currently running on 127.0.0.1:4040
+    }
+
+    const publicUrl =
+      ngrokApiUrl ||
+      (envUrl.startsWith("http") && !envUrl.includes("localhost") && !envUrl.includes("127.0.0.1")
+        ? envUrl.replace(/\/+$/, "")
+        : null);
+
+    res.json({
+      ok: true,
+      active: Boolean(publicUrl),
+      publicUrl,
+      source: ngrokApiUrl ? "ngrok-api" : publicUrl ? "env" : "none",
+      port: Number(process.env.PORT || 5000),
+      tunnels,
+    });
+  })
+);
+
+flowsRouter.post(
+  "/ngrok-tunnel/test-ping",
+  asyncH(async (req, res) => {
+    const rawUrl = String(req.body?.url || "").trim();
+    if (!rawUrl) throw new HttpError(400, "URL is required");
+    const started = Date.now();
+    try {
+      const pingRes = await fetch(rawUrl, {
+        method: "GET",
+        headers: { "User-Agent": "Antigravity-Webhook-Tester/1.0" },
+        signal: AbortSignal.timeout(8000),
+      });
+      const data = await pingRes.json().catch(() => null);
+      res.json({
+        ok: pingRes.ok,
+        status: pingRes.status,
+        statusText: pingRes.statusText,
+        data,
+        latencyMs: Date.now() - started,
+      });
+    } catch (err) {
+      res.json({
+        ok: false,
+        status: 0,
+        error: err instanceof Error ? err.message : String(err),
+        latencyMs: Date.now() - started,
+      });
+    }
+  })
+);
+
+/* ── Test live Cloud Gateway / PinBot WhatsApp Dispatch ── */
+flowsRouter.post(
+  "/test-whatsapp-dispatch",
+  asyncH(async (req, res) => {
+    const { phoneId, apiKey, to, text, template, provider, apiUrl } = req.body || {};
+    if (!to) throw new HttpError(400, "Recipient phone number ('to') is required");
+    const sampleText =
+      String(text || "").trim() || "Hello! This is a test message from your Cloud Gateway WhatsApp chatbot.";
+
+    const result = await sendWhatsAppMessage({
+      provider: provider || "cloudgateway",
+      phoneNumberId: phoneId,
+      apiKey,
+      to: String(to),
+      text: template ? undefined : sampleText,
+      template,
+      apiUrl,
+    });
+
+    res.json(result);
+  })
+);
+
+export const flowWebhookReceiverRouter = Router();
+
+flowWebhookReceiverRouter.get(
+  ["/:flowId/:nodeId", "/:flowId"],
+  asyncH(async (req, res) => {
+    // ── Meta WhatsApp Webhook verification handshake ──
+    const mode = req.query["hub.mode"] || req.query.mode;
+    const challenge = req.query["hub.challenge"] || req.query.challenge;
+
+    if (mode === "subscribe" && challenge) {
+      console.log(`[whatsapp] Verified webhook challenge for flow ${req.params.flowId}`);
+      return res.status(200).send(String(challenge));
+    }
+
+    res.json({
+      ok: true,
+      status: "ready",
+      message: "Webhook endpoint ready. Send a POST request with your JSON payload from WhatsApp or your CRM.",
+      flowId: req.params.flowId,
+      nodeId: req.params.nodeId,
+    });
+  })
+);
+
+flowWebhookReceiverRouter.post(
+  ["/:flowId/:nodeId", "/:flowId"],
+  asyncH(async (req, res) => {
+    const rawFlowId = String(req.params.flowId || "");
+    const nodeId = req.params.nodeId ? String(req.params.nodeId) : undefined;
+
+    let flow: any = null;
+    if (mongoose.Types.ObjectId.isValid(rawFlowId)) {
+      flow = await Flow.findById(rawFlowId).lean();
+    }
+    if (!flow) {
+      const settings = await getSettings();
+      if (settings.activeFlowId && mongoose.Types.ObjectId.isValid(String(settings.activeFlowId))) {
+        flow = await Flow.findById(settings.activeFlowId).lean();
+      }
+      if (!flow) {
+        flow = (await Flow.findOne({ published: true }).lean()) || (await Flow.findOne().sort({ updatedAt: -1 }).lean());
+      }
+    }
+    if (!flow) throw new HttpError(404, "No active or published flow found to handle this webhook");
+
+    const flowId = String(flow._id);
+
+    const payload = req.body ?? {};
+    const payloadStr = typeof payload === "string" ? payload : JSON.stringify(payload, null, 2);
+
+    // ── Auto-detect Meta WhatsApp Cloud API format ──
+    let isWhatsApp = false;
+    let waFrom: string | undefined;
+    let waText: string | undefined;
+    let waName: string | undefined;
+    let waPhoneNumberId: string | undefined;
+
+    if (Array.isArray(payload?.entry) && payload.entry[0]?.changes?.[0]?.value) {
+      const val = payload.entry[0].changes[0].value;
+      // If delivery/read status update, acknowledge HTTP 200 without executing flow
+      if (Array.isArray(val.statuses) && (!Array.isArray(val.messages) || !val.messages.length)) {
+        return res.status(200).json({ ok: true, status: "acknowledged_status_update" });
+      }
+
+      if (Array.isArray(val.messages) && val.messages[0]) {
+        isWhatsApp = true;
+        const msg = val.messages[0];
+        waFrom = msg.from; // User's WhatsApp number (e.g. 919876543210)
+        waText =
+          msg.text?.body ||
+          msg.caption ||
+          msg.interactive?.button_reply?.title ||
+          msg.interactive?.list_reply?.title ||
+          "";
+        waPhoneNumberId = val.metadata?.phone_number_id;
+        if (Array.isArray(val.contacts) && val.contacts[0]?.profile?.name) {
+          waName = val.contacts[0].profile.name;
+        }
+      }
+    }
+
+    // Auto-detect recipientId from WhatsApp or CRM fields
+    const detectedRecipientId =
+      waFrom ??
+      payload.recipientId ??
+      payload.recipient_id ??
+      payload.phone ??
+      payload.to ??
+      payload.from ??
+      payload.customer?.phone ??
+      payload.customer?.id ??
+      payload.id ??
+      req.query.recipientId ??
+      req.query.phone;
+
+    const initialVars: Record<string, string> = {
+      webhookPayload: payloadStr,
+    };
+    if (detectedRecipientId) {
+      initialVars.recipientId = String(detectedRecipientId);
+      initialVars.phone = String(detectedRecipientId);
+    }
+    if (waName) {
+      initialVars.name = waName;
+    }
+    if (waPhoneNumberId) {
+      initialVars.phoneNumberId = waPhoneNumberId;
+    }
+    if (isWhatsApp) {
+      initialVars.channel = "whatsapp";
+    }
+
+    if (typeof payload === "object" && payload !== null && !isWhatsApp) {
+      for (const [k, v] of Object.entries(payload)) {
+        if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+          initialVars[k] = String(v);
+        }
+      }
+    }
+
+    const userMessage =
+      waText ||
+      (typeof payload.message === "string"
+        ? payload.message
+        : typeof payload.text === "string"
+        ? payload.text
+        : "Incoming Webhook");
+
+    initialVars.userMessage = userMessage;
+
+    const sessionId = isWhatsApp
+      ? `wa-${detectedRecipientId || Date.now()}`
+      : `crm-${flowId}-${detectedRecipientId || Date.now()}`;
+
+    recordFlowWebhookEvent(flowId, {
+      receivedAt: new Date().toISOString(),
+      nodeId: nodeId || undefined,
+      payload,
+      recipientId: detectedRecipientId ? String(detectedRecipientId) : undefined,
+    });
+
+    const result = await handleMessage(sessionId, userMessage, isWhatsApp ? "whatsapp" : "webhook", {
+      testFlowId: flowId,
+      initialVars,
+      startNodeId: nodeId || undefined,
+    });
+
+    // ── Find WhatsApp & Cloud Gateway configuration from Webhook node, Flow, or env ──
+    const webhookNode = (flow.nodes as any[])?.find((n) => n.id === nodeId || n.type === "webhook");
+    const nodeData = webhookNode?.data || {};
+
+    const targetPhoneId =
+      nodeData.whatsappPhoneId ||
+      (flow as any).whatsappPhoneId ||
+      waPhoneNumberId ||
+      process.env.CLOUDGATEWAY_PHONE_ID ||
+      process.env.PINBOT_PHONE_ID;
+
+    const targetApiKey =
+      nodeData.whatsappApiKey ||
+      (flow as any).whatsappApiKey ||
+      process.env.CLOUDGATEWAY_API_KEY ||
+      process.env.PINBOT_API_KEY;
+
+    const targetProvider =
+      nodeData.whatsappProvider || (flow as any).whatsappProvider || "cloudgateway";
+
+    const targetBaseUrl =
+      nodeData.whatsappBaseUrl || (flow as any).whatsappBaseUrl || "https://partnersv1.pinbot.ai/v3";
+
+    // Automatically send message back to customer on WhatsApp via Cloud Gateway PinBot API
+    let whatsappResult: { ok: boolean; error?: string } | undefined;
+    if (detectedRecipientId && result.reply && (targetPhoneId || waPhoneNumberId) && (targetApiKey || process.env.WHATSAPP_TOKEN)) {
+      whatsappResult = await sendWhatsAppMessage({
+        provider: targetProvider,
+        apiUrl: targetBaseUrl,
+        phoneNumberId: targetPhoneId || waPhoneNumberId,
+        apiKey: targetApiKey,
+        to: String(detectedRecipientId),
+        text: result.reply,
+      });
+      if (whatsappResult.ok) {
+        console.log(`[whatsapp] Successfully sent AI reply to WhatsApp number ${detectedRecipientId} via ${targetProvider}`);
+      } else {
+        console.warn(`[whatsapp] Message not delivered via WhatsApp gateway: ${whatsappResult.error}`);
+      }
+    }
+
+    res.json({
+      success: true,
+      reply: result.reply,
+      recipientId: result.recipientId || initialVars.recipientId,
+      sessionId,
+      variables: result.variables || initialVars,
+      whatsappSent: whatsappResult?.ok,
+      whatsappError: whatsappResult?.error,
+    });
   })
 );

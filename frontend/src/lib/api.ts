@@ -287,6 +287,10 @@ export type FlowDoc = {
   active: boolean
   tools: string[]
   updatedAt: string
+  whatsappPhoneId?: string
+  whatsappApiKey?: string
+  whatsappProvider?: string
+  whatsappBaseUrl?: string
 }
 export type FlowCheck = { errors: string[]; warnings: string[] }
 
