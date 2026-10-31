@@ -33,6 +33,11 @@ export type BoxData = Record<string, unknown> & {
   aiBaseUrl?: string
   aiVerified?: boolean
   aiVerifiedAt?: string
+  // AI Response mode: Prompt only vs Markdown (.md) Knowledge & MCP
+  responseSource?: 'prompt_only' | 'knowledge_mcp'
+  selectedDocId?: string
+  selectedDocName?: string
+  enableMcp?: boolean
   // API Node settings
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
   headers?: string
@@ -230,7 +235,11 @@ export const BOXES: Record<BoxType, Meta> = {
     defaults: () => ({
       label: 'AI reply',
       mode: 'once',
-      instruction: 'Answer the customer helpfully and concisely using the uploaded company knowledge.',
+      responseSource: 'prompt_only',
+      instruction: 'Answer the customer helpfully and concisely according to the instructions.',
+      selectedDocId: 'all',
+      selectedDocName: '',
+      enableMcp: true,
       aiProvider: 'gemini',
       aiModel: 'gemini-3.8-flash',
       aiApiKey: '',
@@ -340,10 +349,12 @@ export function summary(type: BoxType, d: BoxData): string {
     }
     case 'ai': {
       const provName = AI_PROVIDERS[d.aiProvider as AiProvider]?.name?.split(' ')[0] || (d.aiProvider ? String(d.aiProvider).toUpperCase() : 'Gemini')
-      const m = d.aiModel || 'gemini-1.5-flash'
-      const keyStatus = d.aiApiKey ? (d.aiVerified ? '⚡ Live' : '🔑 Key set') : '⚠️ Set API key'
-      const promptSnippet = d.instruction ? `“${d.instruction.slice(0, 40)}${d.instruction.length > 40 ? '…' : ''}”` : 'No prompt set'
-      return `${provName} (${m}) • ${keyStatus} — ${promptSnippet}`
+      const m = d.aiModel || 'gemini-3.8-flash'
+      const modeLabel = d.responseSource === 'knowledge_mcp'
+        ? (d.selectedDocName ? `📄 ${d.selectedDocName} + MCP` : '📚 MD + MCP')
+        : '✍️ Prompt only'
+      const promptSnippet = d.instruction ? `“${d.instruction.slice(0, 35)}${d.instruction.length > 35 ? '…' : ''}”` : ''
+      return `${provName} (${m}) • [${modeLabel}] ${promptSnippet ? `— ${promptSnippet}` : ''}`
     }
     case 'tool':
       return d.tool ? `${d.tool}  → {{${d.resultVar || 'toolResult'}}}` : 'Choose a tool'

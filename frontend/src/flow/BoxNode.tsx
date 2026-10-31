@@ -45,21 +45,31 @@ export const BoxNode = memo(function BoxNode({ type, data, selected }: NodeProps
           <Icon className={cn('size-3.5', tone.icon)} aria-hidden />
           <span>{meta.title}</span>
           {t === 'ai' ? (
-            d.aiApiKey ? (
-              d.aiVerified ? (
-                <span className="ml-auto inline-flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
-                  <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" /> Live
-                </span>
-              ) : (
-                <span className="ml-auto rounded bg-signal-soft px-1.5 py-0.5 text-[10px] font-medium text-signal">
-                  Key set
-                </span>
-              )
-            ) : (
-              <span className="ml-auto rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-400">
-                ⚠️ Setup Key
+            <div className="ml-auto flex items-center gap-1">
+              <span className={cn(
+                'rounded px-1.5 py-0.5 text-[9.5px] font-semibold',
+                d.responseSource === 'knowledge_mcp'
+                  ? 'bg-purple-500/15 text-purple-700 dark:text-purple-300'
+                  : 'bg-blue-500/15 text-blue-700 dark:text-blue-300'
+              )}>
+                {d.responseSource === 'knowledge_mcp' ? 'MD + MCP' : 'Prompt'}
               </span>
-            )
+              {d.aiApiKey ? (
+                d.aiVerified ? (
+                  <span className="inline-flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+                    <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" /> Live
+                  </span>
+                ) : (
+                  <span className="rounded bg-signal-soft px-1.5 py-0.5 text-[10px] font-medium text-signal">
+                    Key set
+                  </span>
+                )
+              ) : (
+                <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-400">
+                  ⚠️ Setup Key
+                </span>
+              )}
+            </div>
           ) : null}
           {t === 'api' ? (
             <span

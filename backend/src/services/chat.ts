@@ -60,24 +60,29 @@ export async function handleMessage(sessionId: string, text: string, channel = "
 
   /* ── Knowledge: sirf is sawaal se jude tukde (poori file kabhi nahi) ──
      Lazy: tabhi search hota hai jab AI ko sach me jawab dena ho (flow ke question/buttons box par nahi) */
-  let knowledgeCache: KnowledgeHit[] | null = null;
-  const getKnowledge = async (): Promise<KnowledgeHit[]> => {
-    if (knowledgeCache) return knowledgeCache;
-    knowledgeCache = [];
-    if (!settings.knowledgeEnabled) return knowledgeCache;
+  const knowledgeCache = new Map<string, KnowledgeHit[]>();
+  const getKnowledge = async (filterDocId?: string): Promise<KnowledgeHit[]> => {
+    const cacheKey = filterDocId || "all";
+    if (knowledgeCache.has(cacheKey)) return knowledgeCache.get(cacheKey)!;
+    if (!settings.knowledgeEnabled && !filterDocId) return [];
     const userTurns = history.filter((m) => m.role === "user").map((m) => m.content);
     // Chhota follow-up ("aur price?") ho to pichhla sawaal bhi search me jodo
     const query = text.split(/\s+/).length < 4 && userTurns.length > 1 ? `${userTurns[userTurns.length - 2]} ${text}` : text;
-    knowledgeCache = await searchKnowledge(query, { topK: settings.knowledgeTopK, maxChars: settings.knowledgeMaxChars });
-    if (knowledgeCache.length)
+    const hits = await searchKnowledge(query, {
+      topK: settings.knowledgeTopK,
+      maxChars: settings.knowledgeMaxChars,
+      docId: filterDocId !== "all" ? filterDocId : undefined,
+    });
+    knowledgeCache.set(cacheKey, hits);
+    if (hits.length)
       toolLog.push({
         name: "knowledge_search",
-        input: { query },
-        output: `Sent ${knowledgeCache.length} relevant part(s), ${knowledgeCache.reduce((n, k) => n + k.text.length, 0)} characters: ${knowledgeCache.map((k) => k.title).join(" | ")}`,
+        input: { query, docId: filterDocId },
+        output: `Sent ${hits.length} relevant part(s) from ${hits.map((k) => k.docName).join(", ")}: ${hits.map((k) => k.title).join(" | ")}`,
         isError: false,
         at: new Date(),
       });
-    return knowledgeCache;
+    return hits;
   };
 
   const state = { ...((convo.state as Record<string, unknown>) ?? {}) };
@@ -116,16 +121,36 @@ export async function handleMessage(sessionId: string, text: string, channel = "
         emitHandoff: (vars) => emit("conversation.handoff", { sessionId, channel, variables: vars, lastMessage: text }),
         // Flow ka "AI reply" box
         askAI: async (instruction, vars, nodeData) => {
-          const knowledge = await getKnowledge();
+          const responseSource = (nodeData?.responseSource as string) || "prompt_only";
+          const isKnowledgeMcp = responseSource === "knowledge_mcp";
+          const selectedDocId = (nodeData?.selectedDocId as string) || "all";
+          const enableMcp = nodeData?.enableMcp !== false;
+
+          let knowledge: KnowledgeHit[] = [];
+          let mcpToolsDesc = "";
+          let activeTools = enableMcp ? tools : [];
+
+          if (isKnowledgeMcp) {
+            knowledge = await getKnowledge(selectedDocId !== "all" ? selectedDocId : undefined);
+            if (enableMcp && tools.length) {
+              mcpToolsDesc = `\n\nConnected MCP Server Tools and capabilities:\n${tools.map((t) => `- ${t.name}: ${t.description}`).join("\n")}`;
+            }
+          } else {
+            // Mode 1: Prompt Only — no knowledge base, no MCP tools
+            knowledge = [];
+            activeTools = [];
+            mcpToolsDesc = "";
+          }
+
           const known = Object.entries(vars).filter(([k, v]) => v && k !== "lastMessage");
-          const mcpToolsDesc = tools.length
-            ? `\n\nConnected MCP Server Tools and capabilities:\n${tools.map((t) => `- ${t.name}: ${t.description}`).join("\n")}`
-            : "";
           const extra =
-            (instruction ? `\n\nInstruction for this step: ${instruction}` : "") +
+            (instruction ? `\n\nInstruction / What to do: ${instruction}` : "") +
             (known.length ? `\n\nWhat we already know about the customer: ${known.map(([k, v]) => `${k}=${v}`).join(", ")}` : "") +
             mcpToolsDesc;
-          const fullPrompt = promptWith(knowledge) + extra;
+
+          const fullPrompt = isKnowledgeMcp
+            ? promptWith(knowledge) + extra
+            : `${instruction || settings.systemPrompt}\n\n${nowLine()}${extra}`;
 
           // If this AI node has its own API key configured, use it directly!
           const nodeApiKey = typeof nodeData?.aiApiKey === "string" ? nodeData.aiApiKey.trim() : "";
@@ -153,12 +178,18 @@ export async function handleMessage(sessionId: string, text: string, channel = "
           }
 
           if (provider.name === "demo") {
-            // Demo me LLM nahi — uploaded files se seedha jawab, warna team ko bata do
             const top = knowledge[0];
-            return top ? (top.text.length > 700 ? `${top.text.slice(0, 700).replace(/\s+\S*$/, "")}…` : top.text) : "Is sawaal ka jawab hamari team degi — wo jaldi aapse contact karenge.";
+            return top ? (top.text.length > 700 ? `${top.text.slice(0, 700).replace(/\s+\S*$/, "")}…` : top.text) : (instruction || "Is sawaal ka jawab hamari team degi — wo jaldi aapse contact karenge.");
           }
           try {
-            const r = await provider.reply({ history, settings: { ...baseSettings, systemPrompt: fullPrompt }, tools, runTool, state: {}, knowledge });
+            const r = await provider.reply({
+              history,
+              settings: { ...baseSettings, systemPrompt: fullPrompt },
+              tools: activeTools,
+              runTool,
+              state: {},
+              knowledge,
+            });
             if (r.trim()) return r;
           } catch (err) {
             console.error(`[chat] ${provider.name} error in flow AI box:`, err);

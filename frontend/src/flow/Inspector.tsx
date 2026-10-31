@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
+  BookOpen,
   Check,
   ChevronDown,
   ChevronRight,
@@ -9,12 +10,14 @@ import {
   Eye,
   EyeOff,
   FileCode,
+  FileText,
   GitBranch,
   Globe,
   Key,
   KeyRound,
   MessageSquare,
   Phone,
+  Plug,
   Plus,
   Radio,
   RefreshCw,
@@ -32,7 +35,13 @@ import { Button } from '@/components/ui/button'
 import { Field, Input, Select, Textarea } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Badge, Spinner } from '@/components/ui/bits'
-import { api, type McpServerItem, type AiNodeTestResult, type ApiNodeTestResult } from '@/lib/api'
+import {
+  api,
+  type McpServerItem,
+  type AiNodeTestResult,
+  type ApiNodeTestResult,
+  type KnowledgeOverview,
+} from '@/lib/api'
 import {
   BOXES,
   OPERATORS,
@@ -222,6 +231,29 @@ function AiFields({
   const [showKey, setShowKey] = useState(false)
   const [isTesting, setIsTesting] = useState(false)
   const [testResult, setTestResult] = useState<AiNodeTestResult | null>(null)
+
+  const responseSource = d.responseSource || 'prompt_only'
+
+  const knowledgeQuery = useQuery({
+    queryKey: ['knowledge'],
+    queryFn: () => api.get<KnowledgeOverview>('/api/admin/knowledge'),
+  })
+
+  const mcpQuery = useQuery({
+    queryKey: ['mcp-servers'],
+    queryFn: () => api.get<McpServerItem[]>('/api/admin/mcp/servers'),
+  })
+
+  const mdDocs = useMemo(() => {
+    return (knowledgeQuery.data?.docs || []).filter(
+      (doc) => doc.type === 'md' || doc.name.toLowerCase().endsWith('.md')
+    )
+  }, [knowledgeQuery.data])
+
+  const activeMcpTools = useMemo(() => {
+    const servers = mcpQuery.data || []
+    return servers.flatMap((s) => (s.enabled ? s.tools.filter((t) => t.enabled) : []))
+  }, [mcpQuery.data])
 
   const handleTestLive = async () => {
     if (!d.aiApiKey?.trim() && currentProviderKey !== 'custom') {
@@ -512,65 +544,280 @@ function AiFields({
         </div>
       </section>
 
-      {/* ── STEP 2: AI Prompt & Instructions ── */}
-      <section className="space-y-3">
-        <div className="flex items-center gap-2">
-          <Wand2 className="size-4 text-purple-600" />
-          <div>
-            <span className="block text-[13px] font-semibold text-ink">2. AI Prompt & Instructions</span>
-            <span className="block text-[11.5px] text-muted">Enter what needs to be done by the AI at this step</span>
-          </div>
-        </div>
-
-        {/* Quick prompt templates */}
+      {/* ── STEP 2: Response Mode (Prompt vs Markdown File & MCP) ── */}
+      <section className="space-y-3.5">
         <div>
-          <p className="mb-1 text-[11.5px] font-medium text-muted">Quick Prompt Templates:</p>
-          <div className="flex flex-wrap gap-1">
-            {PROMPT_TEMPLATES.map((tmpl) => (
-              <button
-                key={tmpl.title}
-                type="button"
-                onClick={() => applyPromptTemplate(tmpl)}
-                className="rounded border border-line-strong bg-paper px-2 py-0.5 text-[11px] text-ink-2 hover:border-signal hover:text-signal"
-              >
-                + {tmpl.title}
-              </button>
-            ))}
+          <div className="flex items-center gap-1.5 mb-0.5">
+            <Sparkles className="size-4 text-purple-600" />
+            <span className="text-[13px] font-semibold text-ink">2. Response Mode</span>
           </div>
+          <p className="text-[11.5px] text-muted">
+            Choose how this AI node generates its response: strictly from custom prompt instructions, or updated dynamically from your Markdown (.md) document with connected MCP Server tools.
+          </p>
         </div>
 
-        <Field
-          label="AI Prompt / Instructions"
-          htmlFor={id('ins')}
-          hint="Instruct the AI on what it should do (e.g. answer queries, recommend services, qualify leads)."
-        >
-          <Textarea
-            id={id('ins')}
-            value={d.instruction ?? ''}
-            onChange={(e) => onChange({ instruction: e.target.value })}
-            placeholder="e.g. Answer the customer's question helpfully using company knowledge..."
-            className="min-h-32 text-[13px] leading-relaxed"
-          />
-        </Field>
+        {/* 2 Selectable Mode Cards */}
+        <div className="grid gap-2">
+          {/* Option 1: Prompt / Instructions Only */}
+          <button
+            type="button"
+            onClick={() => onChange({ responseSource: 'prompt_only' })}
+            className={cn(
+              'flex items-start gap-3 rounded-lg border p-3 text-left transition-all',
+              responseSource === 'prompt_only'
+                ? 'border-signal bg-signal-soft/60 ring-1 ring-signal/30'
+                : 'border-line bg-paper/50 hover:border-line-strong'
+            )}
+          >
+            <div
+              className={cn(
+                'mt-0.5 rounded-md p-1.5',
+                responseSource === 'prompt_only' ? 'bg-signal text-white' : 'bg-line text-muted'
+              )}
+            >
+              <FileText className="size-4" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between">
+                <span className="text-[12.5px] font-semibold text-ink">1. Custom Prompt / Instructions Only</span>
+                {responseSource === 'prompt_only' && (
+                  <Badge tone="live" className="text-[10px]">Active Mode</Badge>
+                )}
+              </div>
+              <p className="mt-0.5 text-[11.5px] text-muted leading-relaxed">
+                AI responds strictly according to the custom prompt and instructions you specify. No knowledge base or MCP tools are injected.
+              </p>
+            </div>
+          </button>
 
-        {/* Variables chips */}
-        {variables.length ? (
-          <div>
-            <p className="mb-1 text-[11.5px] font-medium text-muted">Insert Saved Variable:</p>
-            <div className="flex flex-wrap gap-1">
-              {variables.map((v) => (
-                <button
-                  key={v}
-                  type="button"
-                  onClick={() => insertVariable(v)}
-                  className="rounded border border-line bg-paper px-2 py-0.5 font-mono text-[11px] text-ink-2 hover:border-signal hover:text-signal"
+          {/* Option 2: Markdown (.md) File & MCP Server */}
+          <button
+            type="button"
+            onClick={() => onChange({ responseSource: 'knowledge_mcp' })}
+            className={cn(
+              'flex items-start gap-3 rounded-lg border p-3 text-left transition-all',
+              responseSource === 'knowledge_mcp'
+                ? 'border-purple-500 bg-purple-500/10 ring-1 ring-purple-500/30'
+                : 'border-line bg-paper/50 hover:border-line-strong'
+            )}
+          >
+            <div
+              className={cn(
+                'mt-0.5 rounded-md p-1.5',
+                responseSource === 'knowledge_mcp' ? 'bg-purple-600 text-white' : 'bg-line text-muted'
+              )}
+            >
+              <Plug className="size-4" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between">
+                <span className="text-[12.5px] font-semibold text-ink">2. Update from Markdown (.md) & MCP Server</span>
+                {responseSource === 'knowledge_mcp' && (
+                  <Badge tone="live" className="bg-purple-600/15 text-purple-700 dark:text-purple-300 text-[10px]">Active Mode</Badge>
+                )}
+              </div>
+              <p className="mt-0.5 text-[11.5px] text-muted leading-relaxed">
+                AI reads real-time updates from your selected <code className="font-mono text-purple-700 dark:text-purple-300">.md</code> document and uses connected MCP Server tools to answer queries, fetch dynamic data, or perform actions.
+              </p>
+            </div>
+          </button>
+        </div>
+
+        {/* ── Mode 2 Details: MD File Selector & MCP Server Tools ── */}
+        {responseSource === 'knowledge_mcp' && (
+          <div className="rounded-lg border border-purple-500/25 bg-purple-500/5 p-3.5 space-y-3.5">
+            {/* Markdown File Picker */}
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="flex items-center gap-1.5 text-[12px] font-semibold text-ink">
+                  <BookOpen className="size-3.5 text-purple-600" />
+                  Select Markdown (.md) Document
+                </label>
+                <a
+                  href="/knowledge"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 text-[11px] font-medium text-purple-600 hover:underline"
                 >
-                  {`{{${v}}}`}
+                  Manage Knowledge <ExternalLink className="size-2.5" />
+                </a>
+              </div>
+
+              {knowledgeQuery.isLoading ? (
+                <div className="flex items-center gap-2 py-2 text-xs text-muted">
+                  <Spinner className="size-3" /> Loading documents…
+                </div>
+              ) : mdDocs.length === 0 ? (
+                <div className="rounded border border-dashed border-purple-300/50 p-2.5 text-[11.5px] text-muted">
+                  <p className="font-medium text-ink">No .md files uploaded yet</p>
+                  <p className="mt-0.5">
+                    Upload your service catalog, FAQ, or guidelines as a <code className="font-mono">.md</code> file in Knowledge Base so the MCP server can feed it to this node.
+                  </p>
+                  <a
+                    href="/knowledge"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-purple-600 hover:underline"
+                  >
+                    + Upload .md file in Knowledge <ExternalLink className="size-3" />
+                  </a>
+                </div>
+              ) : (
+                <Select
+                  value={d.selectedDocId || 'all'}
+                  onChange={(e) => {
+                    const selId = e.target.value
+                    const found = mdDocs.find((m) => m._id === selId)
+                    onChange({
+                      selectedDocId: selId,
+                      selectedDocName: selId === 'all' ? '' : (found?.name || ''),
+                    })
+                  }}
+                  className="text-[12.5px]"
+                >
+                  <option value="all">📚 All Active .md Files ({mdDocs.length} files)</option>
+                  {mdDocs.map((doc) => (
+                    <option key={doc._id} value={doc._id}>
+                      📄 {doc.name} ({doc.chunkCount} chunks • {Math.round(doc.chars / 1000)}k chars)
+                    </option>
+                  ))}
+                </Select>
+              )}
+              <p className="mt-1 text-[11px] text-muted">
+                {d.selectedDocId && d.selectedDocId !== 'all'
+                  ? `The AI will strictly query and prioritize content from "${d.selectedDocName || 'selected doc'}".`
+                  : 'The AI will query across all active Markdown documentation in the knowledge base.'}
+              </p>
+            </div>
+
+            {/* MCP Server Tools Status & Toggle */}
+            <div className="rounded-md border border-purple-500/15 bg-paper p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Plug className="size-3.5 text-purple-600" />
+                  <span className="text-[12px] font-semibold text-ink">MCP Server Tools</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] text-muted">
+                    {d.enableMcp !== false ? 'Enabled' : 'Disabled'}
+                  </span>
+                  <Switch
+                    checked={d.enableMcp !== false}
+                    onCheckedChange={(checked) => onChange({ enableMcp: checked })}
+                  />
+                </div>
+              </div>
+
+              <p className="text-[11.5px] text-muted leading-snug">
+                When enabled, the AI has access to all active tools registered in your MCP servers (e.g. checking services, creating leads, booking appointments).
+              </p>
+
+              {d.enableMcp !== false && (
+                <div className="pt-1">
+                  <div className="flex items-center justify-between text-[11px] text-muted mb-1.5">
+                    <span>Active MCP Tools ({activeMcpTools.length}):</span>
+                    <a
+                      href="/mcp"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-purple-600 hover:underline inline-flex items-center gap-1"
+                    >
+                      MCP Servers <ExternalLink className="size-2.5" />
+                    </a>
+                  </div>
+                  {activeMcpTools.length ? (
+                    <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
+                      {activeMcpTools.map((t) => (
+                        <span
+                          key={t.name}
+                          className="inline-flex items-center gap-1 rounded bg-purple-500/10 px-2 py-0.5 font-mono text-[10.5px] text-purple-700 dark:text-purple-300 border border-purple-500/20"
+                          title={t.description || t.name}
+                        >
+                          <Terminal className="size-2.5 text-purple-500" />
+                          {t.name}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] italic text-muted">
+                      No active MCP tools found. Ensure your MCP servers are connected at <a href="/mcp" className="underline">MCP Servers</a>.
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Prompt / Task Instructions ── */}
+        <div className="space-y-2 pt-1">
+          <div className="flex items-center justify-between">
+            <label htmlFor={id('ins')} className="text-[12.5px] font-semibold text-ink flex items-center gap-1.5">
+              <Wand2 className="size-3.5 text-signal" />
+              {responseSource === 'knowledge_mcp'
+                ? 'Persona & Guidance Instructions (Optional)'
+                : 'AI Prompt / Instructions (What to do)'}
+            </label>
+          </div>
+
+          {/* Quick prompt templates */}
+          <div>
+            <p className="mb-1 text-[11px] font-medium text-muted">Quick Prompt Templates:</p>
+            <div className="flex flex-wrap gap-1">
+              {PROMPT_TEMPLATES.map((tmpl) => (
+                <button
+                  key={tmpl.title}
+                  type="button"
+                  onClick={() => applyPromptTemplate(tmpl)}
+                  className="rounded border border-line-strong bg-paper px-2 py-0.5 text-[11px] text-ink-2 hover:border-signal hover:text-signal"
+                >
+                  + {tmpl.title}
                 </button>
               ))}
             </div>
           </div>
-        ) : null}
+
+          <Field
+            label=""
+            htmlFor={id('ins')}
+            hint={
+              responseSource === 'knowledge_mcp'
+                ? 'Specify tone, guidelines, or constraints for how the AI should answer using the MD document and MCP tools.'
+                : 'Instruct the AI on what it should do (e.g. answer queries, recommend services, qualify leads).'
+            }
+          >
+            <Textarea
+              id={id('ins')}
+              value={d.instruction ?? ''}
+              onChange={(e) => onChange({ instruction: e.target.value })}
+              placeholder={
+                responseSource === 'knowledge_mcp'
+                  ? 'e.g. Answer using the uploaded Markdown documentation. If customer asks for appointments, use MCP tools to check slots...'
+                  : 'e.g. Answer the customer helpfully and concisely according to the instructions...'
+              }
+              className="min-h-28 text-[13px] leading-relaxed"
+            />
+          </Field>
+
+          {/* Variables chips */}
+          {variables.length ? (
+            <div>
+              <p className="mb-1 text-[11px] font-medium text-muted">Insert Saved Variable:</p>
+              <div className="flex flex-wrap gap-1">
+                {variables.map((v) => (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => insertVariable(v)}
+                    className="rounded border border-line bg-paper px-2 py-0.5 font-mono text-[11px] text-ink-2 hover:border-signal hover:text-signal"
+                  >
+                    {`{{${v}}}`}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
 
         {/* Conversation Mode */}
         <fieldset>

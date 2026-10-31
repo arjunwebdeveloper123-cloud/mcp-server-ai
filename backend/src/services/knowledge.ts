@@ -145,7 +145,7 @@ export function tokenize(s: string): string[] {
     .map((w) => (w.length > 4 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w)); // services → service
 }
 
-type IndexedChunk = { docName: string; title: string; text: string; tf: Map<string, number>; len: number };
+type IndexedChunk = { docId: string; docName: string; title: string; text: string; tf: Map<string, number>; len: number };
 let index: { chunks: IndexedChunk[]; df: Map<string, number>; avgLen: number } | null = null;
 
 /** Upload / delete / on-off ke baad cache hata do — agla search naya index banayega */
@@ -157,31 +157,49 @@ async function getIndex() {
   if (index) return index;
   const enabledDocs = await KnowledgeDoc.find({ enabled: true }).select("_id").lean();
   const rows = enabledDocs.length
-    ? await KnowledgeChunk.find({ docId: { $in: enabledDocs.map((d) => d._id) } }).select("docName title text").lean()
+    ? await KnowledgeChunk.find({ docId: { $in: enabledDocs.map((d) => d._id) } }).select("docId docName title text").lean()
     : [];
   const df = new Map<string, number>();
-  const chunks: IndexedChunk[] = rows.map((r) => {
+  const chunks: IndexedChunk[] = rows.map((r: any) => {
     // title 2 baar — heading me aaya shabd zyada important
     const tokens = tokenize(`${r.title ?? ""} ${r.title ?? ""} ${r.text ?? ""}`);
     const tf = new Map<string, number>();
     for (const t of tokens) tf.set(t, (tf.get(t) ?? 0) + 1);
     for (const t of tf.keys()) df.set(t, (df.get(t) ?? 0) + 1);
-    return { docName: r.docName ?? "", title: r.title ?? "", text: r.text ?? "", tf, len: tokens.length };
+    return { docId: String(r.docId || ""), docName: r.docName ?? "", title: r.title ?? "", text: r.text ?? "", tf, len: tokens.length };
   });
   const avgLen = chunks.reduce((n, c) => n + c.len, 0) / Math.max(1, chunks.length);
   return (index = { chunks, df, avgLen });
 }
 
-export async function searchKnowledge(query: string, opts: { topK: number; maxChars: number }): Promise<KnowledgeHit[]> {
+export async function searchKnowledge(
+  query: string,
+  opts: { topK: number; maxChars: number; docId?: string }
+): Promise<KnowledgeHit[]> {
   const terms = [...new Set(tokenize(query))];
-  if (!terms.length) return [];
   const { chunks, df, avgLen } = await getIndex();
   if (!chunks.length) return [];
 
-  const N = chunks.length;
+  const targetChunks = opts.docId && opts.docId !== "all"
+    ? chunks.filter((c) => String(c.docId) === String(opts.docId))
+    : chunks;
+
+  if (!targetChunks.length) return [];
+
+  // If query terms empty but specific doc requested, return top chunks of that doc
+  if (!terms.length) {
+    return targetChunks.slice(0, opts.topK).map((c) => ({
+      docName: c.docName,
+      title: c.title,
+      text: c.text,
+      score: 1.0,
+    }));
+  }
+
+  const N = targetChunks.length;
   const k1 = 1.2;
   const b = 0.75;
-  const scored = chunks
+  const scored = targetChunks
     .map((c) => {
       let score = 0;
       for (const t of terms) {
@@ -196,7 +214,17 @@ export async function searchKnowledge(query: string, opts: { topK: number; maxCh
     .filter((x) => x.score > 0)
     .sort((a, z) => z.score - a.score);
 
-  if (!scored.length) return [];
+  if (!scored.length) {
+    if (opts.docId && opts.docId !== "all") {
+      return targetChunks.slice(0, opts.topK).map((c) => ({
+        docName: c.docName,
+        title: c.title,
+        text: c.text,
+        score: 0.5,
+      }));
+    }
+    return [];
+  }
   const best = scored[0].score;
   const hits: KnowledgeHit[] = [];
   let chars = 0;
